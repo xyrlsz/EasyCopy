@@ -13,9 +13,31 @@ Write-Host "Starting arm64-v8a release build..." -ForegroundColor Green
 
 $androidDir = Join-Path $projectRoot "android"
 $keyPropertiesPath = Join-Path $androidDir "key.properties"
-if ((-not (Test-Path $keyPropertiesPath)) -and (-not $AllowDebugSigning)) {
-    Write-Error "android/key.properties not found. Use -AllowDebugSigning if you really want a debug-signed release APK."
+$storePassword = if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_STORE_PASSWORD)) {
+    $env:ANDROID_STORE_PASSWORD
+} else {
+    $env:ANDROID_KEYSTORE_PASSWORD
+}
+$keystorePath = if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_KEYSTORE_PATH)) {
+    $env:ANDROID_KEYSTORE_PATH
+} else {
+    $env:ANDROID_KEYSTORE_FILE
+}
+$hasKeyProperties = Test-Path $keyPropertiesPath
+$hasEnvSigning = `
+    (-not [string]::IsNullOrWhiteSpace($keystorePath)) -and `
+    (-not [string]::IsNullOrWhiteSpace($storePassword)) -and `
+    (-not [string]::IsNullOrWhiteSpace($env:ANDROID_KEY_ALIAS)) -and `
+    (-not [string]::IsNullOrWhiteSpace($env:ANDROID_KEY_PASSWORD))
+
+if ((-not $hasKeyProperties) -and (-not $hasEnvSigning) -and (-not $AllowDebugSigning)) {
+    Write-Error "Release signing is not configured. Provide android/key.properties or ANDROID_KEYSTORE_PATH / ANDROID_STORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD. Use -AllowDebugSigning only for temporary local builds."
     exit 1
+}
+
+if ($AllowDebugSigning) {
+    $env:EASY_COPY_ALLOW_DEBUG_SIGNING = "true"
+    Write-Warning "Building a debug-signed release APK. Future public versions must keep using the same signing key, otherwise Android cannot upgrade in place."
 }
 
 $pubspec = Get-Content pubspec.yaml

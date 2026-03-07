@@ -1,0 +1,7 @@
+# Copy this file to android/key.properties and fill in the real values.
+# Keep using the same keystore after the first public release.
+
+storeFile=upload-keystore.jks
+storePassword=replace-with-keystore-password
+keyAlias=upload
+keyPassword=replace-with-key-password
