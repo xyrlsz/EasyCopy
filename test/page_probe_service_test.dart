@@ -7,10 +7,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+String fixturePath(String name) {
+  return 'test${Platform.pathSeparator}fixtures${Platform.pathSeparator}'
+      'site${Platform.pathSeparator}$name';
+}
+
 void main() {
   test('page probe recognizes homepage and detail pages', () async {
-    final String homeHtml = await File('homepage.html').readAsString();
-    final String detailHtml = await File('series.html').readAsString();
+    final String homeHtml = await File(fixturePath('homepage.html'))
+        .readAsString();
+    final String detailHtml = await File(fixturePath('series.html'))
+        .readAsString();
     final PageProbeService service = PageProbeService(
       client: MockClient((http.Request request) async {
         if (request.url.path == '/') {
@@ -40,7 +47,8 @@ void main() {
   });
 
   test('page probe extracts reader contentKey fingerprint', () async {
-    final String readerHtml = await File('chapter.html').readAsString();
+    final String readerHtml = await File(fixturePath('chapter.html'))
+        .readAsString();
     final PageProbeService service = PageProbeService(
       client: MockClient((http.Request request) async {
         return http.Response.bytes(utf8.encode(readerHtml), 200);

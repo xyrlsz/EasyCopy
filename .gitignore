@@ -37,12 +37,17 @@ login_headers.txt
 after_back.png
 device_*.png
 verify_*.png
+flutter_run.log
+build_arm64.ps1
+build_apk_arm64_v8a.ps1
 
 # Symbolication related
 app.*.symbols
 
 # Obfuscation related
 app.*.map.json
+release_output/
+release_symbols/
 
 # Android Studio will place build artifacts here
 /android/app/debug

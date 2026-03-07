@@ -126,7 +126,16 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Stop'
-          .\build_apk_arm64_v8a.ps1 -SymbolsDir "release_symbols\${{ steps.meta.outputs.app_version }}"
+
+          $symbolsDir = "release_symbols\${{ steps.meta.outputs.app_version }}\android-arm64-v8a"
+          New-Item -ItemType Directory -Path $symbolsDir -Force | Out-Null
+
+          flutter build apk `
+            --release `
+            --target-platform=android-arm64 `
+            --split-per-abi `
+            --tree-shake-icons `
+            --split-debug-info="$symbolsDir"
 
       - name: Prepare release assets
         shell: pwsh
