@@ -64,6 +64,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _standardScrollController = ScrollController();
   final ScrollController _readerScrollController = ScrollController();
+  final GlobalKey _readerViewportKey = GlobalKey();
   final ReaderPlatformBridge _readerPlatformBridge =
       ReaderPlatformBridge.instance;
   final HostManager _hostManager = HostManager.instance;
@@ -102,6 +103,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   bool _readerPresentationSyncScheduled = false;
   bool _suspendStandardScrollTracking = false;
   int _currentReaderPageIndex = 0;
+  int _currentVisibleReaderImageIndex = 0;
   int? _batteryLevel;
   _AppliedReaderEnvironment? _appliedReaderEnvironment;
   ReaderPreferences? _lastObservedReaderPreferences;
@@ -109,6 +111,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   final Map<String, String> _cancelledComicTitles = <String, String>{};
   final Map<int, ScrollController> _readerPageScrollControllers =
       <int, ScrollController>{};
+  final Map<int, GlobalKey> _readerImageItemKeys = <int, GlobalKey>{};
   StreamSubscription<int>? _batterySubscription;
   StreamSubscription<ReaderVolumeKeyAction>? _volumeKeySubscription;
   _PendingPageLoad? _pendingPageLoad;
@@ -475,6 +478,61 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     _readerPageController = PageController(initialPage: initialPage);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       previousController.dispose();
+    });
+  }
+
+  GlobalKey _readerImageItemKeyFor(int index) {
+    return _readerImageItemKeys.putIfAbsent(index, GlobalKey.new);
+  }
+
+  void _scheduleVisibleReaderImageIndexUpdate() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _readerPreferences.isPaged) {
+        return;
+      }
+      _updateVisibleReaderImageIndex();
+    });
+  }
+
+  void _updateVisibleReaderImageIndex() {
+    if (!_readerScrollController.hasClients) {
+      return;
+    }
+    final BuildContext? viewportContext = _readerViewportKey.currentContext;
+    if (viewportContext == null) {
+      return;
+    }
+    final RenderObject? viewportRenderObject = viewportContext.findRenderObject();
+    if (viewportRenderObject is! RenderBox) {
+      return;
+    }
+    final double viewportTop = viewportRenderObject.localToGlobal(Offset.zero).dy;
+    final double viewportCenter =
+        viewportTop + (viewportRenderObject.size.height / 2);
+    int bestIndex = _currentVisibleReaderImageIndex;
+    double bestDistance = double.infinity;
+    for (final MapEntry<int, GlobalKey> entry in _readerImageItemKeys.entries) {
+      final BuildContext? itemContext = entry.value.currentContext;
+      if (itemContext == null) {
+        continue;
+      }
+      final RenderObject? renderObject = itemContext.findRenderObject();
+      if (renderObject is! RenderBox || !renderObject.attached) {
+        continue;
+      }
+      final Offset topLeft = renderObject.localToGlobal(Offset.zero);
+      final double centerY = topLeft.dy + (renderObject.size.height / 2);
+      final double distance = (centerY - viewportCenter).abs();
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = entry.key;
+      }
+    }
+    if (bestIndex == _currentVisibleReaderImageIndex) {
+      return;
+    }
+    setState(() {
+      _currentVisibleReaderImageIndex = bestIndex;
     });
   }
 
@@ -1414,6 +1472,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     bool bypassCache = false,
     bool preserveVisiblePage = false,
     NavigationIntent historyMode = NavigationIntent.push,
+    _CachedChapterNavigationContext cachedChapterContext =
+        const _CachedChapterNavigationContext(),
   }) async {
     _persistVisiblePageState();
     await _hostManager.ensureInitialized();
@@ -1446,6 +1506,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     if (!AppConfig.isAllowedNavigationUri(targetUri)) {
       _showSnackBar('已阻止跳转到站外页面');
       return;
+    }
+    if (_isReaderChapterUri(targetUri)) {
+      final bool openedFromCache = await _tryOpenCachedChapterReader(
+        targetUri,
+        historyMode: historyMode,
+        preserveVisiblePage: preserveVisiblePage,
+        context: cachedChapterContext,
+      );
+      if (openedFromCache) {
+        return;
+      }
     }
 
     _consecutiveFrameFailures = 0;
@@ -1492,6 +1563,46 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       _nextFreshNavigationIntent = null;
       _nextFreshPreserveCurrentPage = null;
     }
+  }
+
+  _CachedChapterNavigationContext _resolvedCachedChapterContext(
+    Uri targetUri, {
+    required _CachedChapterNavigationContext context,
+  }) {
+    if (context.hasAnyValue) {
+      return context;
+    }
+    final EasyCopyPage? currentPage = _page;
+    if (currentPage is! ReaderPageData) {
+      return const _CachedChapterNavigationContext();
+    }
+    final String targetKey = _chapterPathKey(targetUri.toString());
+    final String currentKey = _chapterPathKey(currentPage.uri);
+    final String prevKey = _chapterPathKey(currentPage.prevHref);
+    final String nextKey = _chapterPathKey(currentPage.nextHref);
+
+    if (targetKey == currentKey) {
+      return _CachedChapterNavigationContext(
+        prevHref: currentPage.prevHref,
+        nextHref: currentPage.nextHref,
+        catalogHref: currentPage.catalogHref,
+      );
+    }
+    if (targetKey == prevKey) {
+      return _CachedChapterNavigationContext(
+        nextHref: currentPage.uri,
+        catalogHref: currentPage.catalogHref,
+      );
+    }
+    if (targetKey == nextKey) {
+      return _CachedChapterNavigationContext(
+        prevHref: currentPage.uri,
+        catalogHref: currentPage.catalogHref,
+      );
+    }
+    return _CachedChapterNavigationContext(
+      catalogHref: currentPage.catalogHref,
+    );
   }
 
   Future<void> _revalidateCachedPage(
@@ -1676,7 +1787,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     String nextHref = '',
     String catalogHref = '',
     NavigationIntent historyMode = NavigationIntent.push,
-    bool preferCached = true,
   }) async {
     if (href.trim().isEmpty) {
       return;
@@ -1689,19 +1799,15 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       await _openAuthFlow();
       return;
     }
-    if (preferCached && _isReaderChapterUri(targetUri)) {
-      final bool openedFromCache = await _tryOpenCachedChapterReader(
-        targetUri.toString(),
+    await _loadUri(
+      targetUri,
+      historyMode: historyMode,
+      cachedChapterContext: _CachedChapterNavigationContext(
         prevHref: prevHref,
         nextHref: nextHref,
         catalogHref: catalogHref,
-        historyMode: historyMode,
-      );
-      if (openedFromCache) {
-        return;
-      }
-    }
-    await _loadUri(targetUri, historyMode: historyMode);
+      ),
+    );
   }
 
   bool _isReaderChapterUri(Uri uri) {
@@ -1709,26 +1815,27 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }
 
   Future<bool> _tryOpenCachedChapterReader(
-    String href, {
-    String prevHref = '',
-    String nextHref = '',
-    String catalogHref = '',
-    NavigationIntent historyMode = NavigationIntent.push,
+    Uri targetUri, {
+    required NavigationIntent historyMode,
+    required bool preserveVisiblePage,
+    _CachedChapterNavigationContext context =
+        const _CachedChapterNavigationContext(),
   }) async {
+    final _CachedChapterNavigationContext resolvedContext =
+        _resolvedCachedChapterContext(targetUri, context: context);
     final ReaderPageData? cachedPage = await _downloadService.loadCachedReaderPage(
-      href,
-      prevHref: prevHref,
-      nextHref: nextHref,
-      catalogHref: catalogHref,
+      targetUri.toString(),
+      prevHref: resolvedContext.prevHref,
+      nextHref: resolvedContext.nextHref,
+      catalogHref: resolvedContext.catalogHref,
     );
     if (cachedPage == null) {
       return false;
     }
-    _persistVisiblePageState();
     final int targetTabIndex = _prepareRouteEntry(
       Uri.parse(cachedPage.uri),
       intent: historyMode,
-      preserveVisiblePage: false,
+      preserveVisiblePage: preserveVisiblePage,
     );
     _applyLoadedPage(
       cachedPage,
@@ -2090,7 +2197,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     final bool changedPage = previousUri != page.uri;
     if (changedPage) {
       _currentReaderPageIndex = 0;
+      _currentVisibleReaderImageIndex = 0;
       _disposeReaderPagedScrollControllers();
+      _readerImageItemKeys.clear();
     }
     _scheduleReaderPresentationSync();
     if (changedPage || forceRestore) {
@@ -2127,6 +2236,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       }
       _lastPersistedReaderPosition = savedPosition;
       _currentReaderPageIndex = pageIndex;
+      _currentVisibleReaderImageIndex = pageIndex;
       if (mounted) {
         setState(() {});
       }
@@ -2147,6 +2257,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     _lastPersistedReaderPosition = savedPosition;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _jumpReaderToOffset(savedOffset, attempts: 10);
+      _scheduleVisibleReaderImageIndexUpdate();
     });
   }
 
@@ -2232,6 +2343,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     }
     _scheduleReaderProgressPersistence();
     _restartReaderAutoTurn();
+    _scheduleVisibleReaderImageIndexUpdate();
   }
 
   void _handleReaderPageChanged(int index) {
@@ -2240,10 +2352,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     }
     if (!mounted) {
       _currentReaderPageIndex = index;
+      _currentVisibleReaderImageIndex = index;
       return;
     }
     setState(() {
       _currentReaderPageIndex = index;
+      _currentVisibleReaderImageIndex = index;
     });
     _scheduleReaderProgressPersistence();
     _restartReaderAutoTurn();
@@ -2446,9 +2560,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }
 
   bool get _shouldShowHeaderCard => !_isPrimaryTabContent && !_isDetailRoute;
-
-  bool get _shouldShowStandaloneDiscoverSearch =>
-      _isPrimaryTabContent && _selectedIndex == 1;
 
   bool get _shouldShowBackButton {
     final EasyCopyPage? page = _page;
@@ -2663,6 +2774,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }
 
   List<Widget> _buildStandardTopContent(BuildContext context) {
+    if (_shouldShowDiscoverSearchChrome) {
+      return <Widget>[
+        _buildDiscoverSearchChrome(context),
+        const SizedBox(height: 18),
+      ];
+    }
+
     if (_shouldShowHeaderCard) {
       return <Widget>[
         _buildHeaderCard(
@@ -2675,20 +2793,96 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       ];
     }
 
-    if (_shouldShowStandaloneDiscoverSearch) {
-      return <Widget>[
-        _buildStandaloneDiscoverSearchBar(context),
-        const SizedBox(height: 18),
-      ];
-    }
-
     return const <Widget>[];
   }
 
-  Widget _buildStandaloneDiscoverSearchBar(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(borderRadius: BorderRadius.circular(18)),
-      child: _buildSearchField(context),
+  bool get _shouldShowDiscoverSearchChrome {
+    if (_selectedIndex != 1 || _isDetailRoute) {
+      return false;
+    }
+    final EasyCopyPage? page = _page;
+    if (page == null || page is DiscoverPageData) {
+      return true;
+    }
+    final String path = _currentUri.path.toLowerCase();
+    return path.startsWith('/comics') || path.startsWith('/search');
+  }
+
+  Widget _buildDiscoverSearchChrome(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    return Row(
+      children: <Widget>[
+        if (_shouldShowBackButton) ...<Widget>[
+          IconButton.filledTonal(
+            onPressed: _handleBackNavigation,
+            style: IconButton.styleFrom(
+              backgroundColor: colorScheme.surface,
+              foregroundColor: colorScheme.onSurface,
+            ),
+            icon: const Icon(Icons.arrow_back_rounded),
+          ),
+          const SizedBox(width: 10),
+        ],
+        Expanded(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              color: colorScheme.surface,
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: colorScheme.outlineVariant),
+            ),
+            child: Row(
+              children: <Widget>[
+                Icon(
+                  Icons.search_rounded,
+                  color: colorScheme.primary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: _searchController,
+                    onSubmitted: _submitSearch,
+                    textInputAction: TextInputAction.search,
+                    decoration: const InputDecoration(
+                      hintText: '搜索漫画、作者或题材',
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      disabledBorder: InputBorder.none,
+                      focusedErrorBorder: InputBorder.none,
+                      errorBorder: InputBorder.none,
+                      filled: false,
+                      isDense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                ),
+                if (_searchController.text.trim().isNotEmpty)
+                  IconButton(
+                    onPressed: () {
+                      if (_currentUri.path == '/search') {
+                        _searchController.clear();
+                        unawaited(
+                          _loadUri(
+                            AppConfig.resolvePath('/comics'),
+                            historyMode: NavigationIntent.preserve,
+                          ),
+                        );
+                        return;
+                      }
+                      setState(_searchController.clear);
+                    },
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                IconButton(
+                  onPressed: () => _submitSearch(_searchController.text),
+                  icon: const Icon(Icons.arrow_forward_rounded),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -4093,20 +4287,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                 foregroundColor: colorScheme.onSurface,
               ),
             ),
-          if (_readerPreferences.showProgress)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: viewPadding.bottom + 88,
-              child: Align(
-                child: _ReaderStatusPill(
-                  label: _readerProgressLabel(page),
-                  icon: Icons.auto_stories_rounded,
-                  backgroundColor: colorScheme.surface.withValues(alpha: 0.88),
-                  foregroundColor: colorScheme.onSurface,
-                ),
-              ),
-            ),
         ],
       ),
     );
@@ -4119,23 +4299,18 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     return '$hour:$minute';
   }
 
-  String _readerProgressLabel(ReaderPageData page) {
+  String _readerPageCountLabel(ReaderPageData page) {
+    if (page.imageUrls.isEmpty) {
+      return '-- / --';
+    }
     if (_readerPreferences.isPaged) {
       return '${_currentReaderPageIndex + 1} / ${page.imageUrls.length}';
     }
-    if (!_readerScrollController.hasClients) {
-      return page.progressLabel.isEmpty ? '0%' : page.progressLabel;
-    }
-    final double maxExtent = _readerScrollController.position.maxScrollExtent;
-    if (maxExtent <= 0) {
-      return '100%';
-    }
-    final int percent =
-        ((_readerScrollController.offset / maxExtent) * 100).round().clamp(
-              0,
-              100,
-            );
-    return '$percent%';
+    final int visibleIndex = _currentVisibleReaderImageIndex.clamp(
+      0,
+      page.imageUrls.length - 1,
+    );
+    return '${visibleIndex + 1} / ${page.imageUrls.length}';
   }
 
   Widget _buildReaderChapterControls(
@@ -4161,16 +4336,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-                Text(
-                  page.progressLabel.isEmpty ? '-- / --' : page.progressLabel,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w900,
+                if (_readerPreferences.showProgress)
+                  Text(
+                    _readerPageCountLabel(page),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
-                ),
                 if (page.chapterTitle.isNotEmpty) ...<Widget>[
-                  const SizedBox(height: 2),
+                  SizedBox(height: _readerPreferences.showProgress ? 2 : 0),
                   Text(
                     page.chapterTitle,
                     maxLines: 1,
@@ -4221,6 +4397,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         itemCount: page.imageUrls.length,
         itemBuilder: (BuildContext context, int index) {
           return Padding(
+            key: _readerImageItemKeyFor(index),
             padding: EdgeInsets.only(bottom: showGap ? 10 : 0),
             child: _buildReaderImageFrame(
               context,
@@ -4362,19 +4539,22 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       body: Column(
         children: <Widget>[
           Expanded(
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTap: _showReaderSettingsSheet,
-              child: Stack(
-                fit: StackFit.expand,
-                children: <Widget>[
-                  Positioned.fill(
-                    child: _readerPreferences.isPaged
-                        ? _buildReaderPagedContent(context, page)
-                        : _buildReaderScrollableContent(context, page),
-                  ),
-                  _buildReaderOverlay(context, page),
-                ],
+            child: SizedBox(
+              key: _readerViewportKey,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: _showReaderSettingsSheet,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: <Widget>[
+                    Positioned.fill(
+                      child: _readerPreferences.isPaged
+                          ? _buildReaderPagedContent(context, page)
+                          : _buildReaderScrollableContent(context, page),
+                    ),
+                    _buildReaderOverlay(context, page),
+                  ],
+                ),
               ),
             ),
           ),
@@ -5488,6 +5668,23 @@ class _AdjacentChapterLinks {
 
   final String prevHref;
   final String nextHref;
+}
+
+class _CachedChapterNavigationContext {
+  const _CachedChapterNavigationContext({
+    this.prevHref = '',
+    this.nextHref = '',
+    this.catalogHref = '',
+  });
+
+  final String prevHref;
+  final String nextHref;
+  final String catalogHref;
+
+  bool get hasAnyValue =>
+      prevHref.trim().isNotEmpty ||
+      nextHref.trim().isNotEmpty ||
+      catalogHref.trim().isNotEmpty;
 }
 
 class _PendingPageLoad {

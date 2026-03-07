@@ -186,6 +186,12 @@ class PageRepository {
   }) async {
     final EasyCopyPage page = _isProfileUri(uri)
         ? await _apiClient.loadProfile()
+        : _isSearchUri(uri)
+        ? await _apiClient.loadSearchResults(
+            query: uri.queryParameters['q'] ?? '',
+            page: int.tryParse(uri.queryParameters['page'] ?? '') ?? 1,
+            qType: uri.queryParameters['q_type'] ?? '',
+          )
         : await _standardPageLoader(uri, authScope: requestedKey.authScope);
 
     final PageQueryKey finalKey = PageQueryKey.forUri(
@@ -217,7 +223,7 @@ class PageRepository {
     required PageQueryKey key,
     required CachedPageEnvelope envelope,
   }) async {
-    if (_isProfileUri(uri)) {
+    if (_isProfileUri(uri) || _isSearchUri(uri)) {
       final EasyCopyPage page = await loadFresh(uri, authScope: key.authScope);
       final PageQueryKey finalKey = PageQueryKey.forUri(
         Uri.parse(page.uri),
@@ -271,6 +277,10 @@ class PageRepository {
 
   bool _isProfileUri(Uri uri) {
     return uri.path.startsWith(AppConfig.profilePath);
+  }
+
+  bool _isSearchUri(Uri uri) {
+    return uri.path.startsWith('/search');
   }
 
   String _authScopeForPage(EasyCopyPage page, String requestedAuthScope) {

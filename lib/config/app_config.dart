@@ -46,13 +46,23 @@ class AppConfig {
     return hostManager.isAllowedNavigationUri(uri);
   }
 
-  static Uri buildSearchUri(String query) {
+  static Uri buildSearchUri(
+    String query, {
+    int page = 1,
+    String qType = '',
+  }) {
     final String normalizedQuery = query.trim();
+    final int normalizedPage = page < 1 ? 1 : page;
+    final String normalizedQueryType = qType.trim();
     if (normalizedQuery.isEmpty) {
       return resolvePath('/search');
     }
-    return resolvePath(
-      '/search?q=${Uri.encodeQueryComponent(normalizedQuery)}',
+    return resolvePath('/search').replace(
+      queryParameters: <String, String>{
+        'q': normalizedQuery,
+        if (normalizedPage > 1) 'page': '$normalizedPage',
+        if (normalizedQueryType.isNotEmpty) 'q_type': normalizedQueryType,
+      },
     );
   }
 

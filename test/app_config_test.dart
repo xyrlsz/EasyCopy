@@ -38,4 +38,15 @@ void main() {
       3,
     );
   });
+
+  test('buildSearchUri keeps page and q_type in search routes', () {
+    expect(
+      AppConfig.buildSearchUri('海贼王').toString(),
+      'https://www.2026copy.com/search?q=%E6%B5%B7%E8%B4%BC%E7%8E%8B',
+    );
+    expect(
+      AppConfig.buildSearchUri('海贼王', page: 3, qType: 'author').toString(),
+      'https://www.2026copy.com/search?q=%E6%B5%B7%E8%B4%BC%E7%8E%8B&page=3&q_type=author',
+    );
+  });
 }

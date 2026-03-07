@@ -36,6 +36,7 @@ class SiteApiClient {
 
   final http.Client _client;
   final SiteSession _session;
+  static const int _searchPageSize = 12;
 
   Future<SiteLoginResult> login({
     required String username,
@@ -113,6 +114,75 @@ class SiteApiClient {
     );
   }
 
+  Future<DiscoverPageData> loadSearchResults({
+    required String query,
+    int page = 1,
+    String qType = '',
+  }) async {
+    final String normalizedQuery = query.trim();
+    final int normalizedPage = page < 1 ? 1 : page;
+    final String normalizedQueryType = qType.trim();
+    if (normalizedQuery.isEmpty) {
+      return DiscoverPageData(
+        title: '搜索',
+        uri: AppConfig.buildSearchUri('', page: normalizedPage).toString(),
+        filters: const <FilterGroupData>[],
+        items: const <ComicCardData>[],
+        pager: const PagerData(),
+        spotlight: const <ComicCardData>[],
+      );
+    }
+
+    final Map<String, Object?> payload = await _getSearchJson(
+      query: normalizedQuery,
+      page: normalizedPage,
+      qType: normalizedQueryType,
+    );
+    final Map<String, Object?> results = _asMap(payload['results']);
+    final List<Map<String, Object?>> list = _extractList(results);
+    final int total =
+        (results['total'] as num?)?.toInt() ??
+        (results['count'] as num?)?.toInt() ??
+        (results['total_count'] as num?)?.toInt() ??
+        list.length;
+    final int totalPages = total <= 0
+        ? 1
+        : (total / _searchPageSize).ceil().clamp(1, 999999);
+
+    return DiscoverPageData(
+      title: '搜索',
+      uri: AppConfig.buildSearchUri(
+        normalizedQuery,
+        page: normalizedPage,
+        qType: normalizedQueryType,
+      ).toString(),
+      filters: const <FilterGroupData>[],
+      items: list
+          .map((Map<String, Object?> item) => _parseSearchComic(item))
+          .where((ComicCardData item) => item.title.isNotEmpty)
+          .toList(growable: false),
+      pager: PagerData(
+        currentLabel: '$normalizedPage',
+        totalLabel: '共$totalPages页 · $total条',
+        prevHref: normalizedPage > 1
+            ? AppConfig.buildSearchUri(
+                normalizedQuery,
+                page: normalizedPage - 1,
+                qType: normalizedQueryType,
+              ).toString()
+            : '',
+        nextHref: normalizedPage < totalPages
+            ? AppConfig.buildSearchUri(
+                normalizedQuery,
+                page: normalizedPage + 1,
+                qType: normalizedQueryType,
+              ).toString()
+            : '',
+      ),
+      spotlight: const <ComicCardData>[],
+    );
+  }
+
   Future<Map<String, Object?>> _getJson(String path) async {
     await _session.ensureInitialized();
     final Uri uri = AppConfig.resolvePath(path);
@@ -140,6 +210,45 @@ class SiteApiClient {
     final int code = (payload['code'] as num?)?.toInt() ?? response.statusCode;
     if (code != 200) {
       throw SiteApiException((payload['message'] as String?) ?? '接口请求失败：$code');
+    }
+    return payload;
+  }
+
+  Future<Map<String, Object?>> _getSearchJson({
+    required String query,
+    required int page,
+    required String qType,
+  }) async {
+    await _session.ensureInitialized();
+    final int offset = (page - 1) * _searchPageSize;
+    final Uri uri = AppConfig.resolvePath('/api/kb/web/searchcd/comics').replace(
+      queryParameters: <String, String>{
+        'offset': '$offset',
+        'platform': '2',
+        'limit': '$_searchPageSize',
+        'q': query,
+        'q_type': qType,
+      },
+    );
+    final http.Response response = await _client.get(
+      uri,
+      headers: <String, String>{
+        'Accept': 'application/json',
+        'User-Agent': AppConfig.desktopUserAgent,
+        'platform': '2',
+        if (_session.cookieHeader.isNotEmpty) 'Cookie': _session.cookieHeader,
+      },
+    );
+    final Object? decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    if (decoded is! Map) {
+      throw SiteApiException('搜索接口返回格式异常。');
+    }
+    final Map<String, Object?> payload = decoded.map(
+      (Object? key, Object? value) => MapEntry(key.toString(), value),
+    );
+    final int code = (payload['code'] as num?)?.toInt() ?? response.statusCode;
+    if (code != 200) {
+      throw SiteApiException((payload['message'] as String?) ?? '搜索失败：$code');
     }
     return payload;
   }
@@ -354,6 +463,43 @@ class SiteApiClient {
         .toList(growable: false);
   }
 
+  ComicCardData _parseSearchComic(Map<String, Object?> item) {
+    final Map<String, Object?> source = _firstNonEmptyMap(item, <String>[
+      'comic',
+      'comic_info',
+      'cartoon',
+      'results',
+    ]).isNotEmpty
+        ? _firstNonEmptyMap(item, <String>[
+            'comic',
+            'comic_info',
+            'cartoon',
+            'results',
+          ])
+        : item;
+    final String pathWord = _pickString(source, <String>[
+      'path_word',
+      'pathWord',
+      'slug',
+    ]);
+    final String authorText = _searchAuthorLabel(source);
+    return ComicCardData(
+      title: _pickString(source, <String>['name', 'title']),
+      subtitle: authorText.isEmpty ? '作者：--' : '作者：$authorText',
+      secondaryText: _pickString(source, <String>[
+        'datetime_updated',
+        'status',
+        'brief',
+      ]),
+      coverUrl: _pickString(source, <String>[
+        'cover',
+        'cover_url',
+        'image',
+      ]),
+      href: _buildComicHref(pathWord, source, item),
+    );
+  }
+
   List<Map<String, Object?>> _extractList(Object? source) {
     if (source is List) {
       return source.whereType<Map>().map(_asMap).toList(growable: false);
@@ -417,6 +563,29 @@ class SiteApiClient {
     return AppConfig.resolvePath(
       '/comic/$pathWord/chapter/$chapterUuid',
     ).toString();
+  }
+
+  String _searchAuthorLabel(Map<String, Object?> source) {
+    final Object? authorValue = source['author'];
+    if (authorValue is List) {
+      final List<String> labels = authorValue
+          .whereType<Map>()
+          .map(
+            (Map value) => _pickString(
+              value.map(
+                (Object? key, Object? nested) =>
+                    MapEntry(key.toString(), nested),
+              ),
+              const <String>['name', 'author_name', 'title'],
+            ),
+          )
+          .where((String value) => value.isNotEmpty)
+          .toList(growable: false);
+      if (labels.isNotEmpty) {
+        return labels.join(' / ');
+      }
+    }
+    return _pickString(source, const <String>['author_name', 'author']);
   }
 
   Map<String, Object?> _asMap(Object? value) {

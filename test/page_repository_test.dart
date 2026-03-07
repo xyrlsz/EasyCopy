@@ -252,7 +252,7 @@ void main() {
       },
     );
 
-    final Uri requestedUri = Uri.parse('https://example.com/search?q=jump');
+    final Uri requestedUri = Uri.parse('https://example.com/topic/jump');
     await repository.loadFresh(requestedUri, authScope: 'guest');
 
     expect(
@@ -270,6 +270,66 @@ void main() {
       ),
       isNotNull,
     );
+  });
+
+  test('search routes load through the API client instead of the standard loader', () async {
+    int loaderCount = 0;
+    int searchLoadCount = 0;
+    final PageRepository repository = PageRepository(
+      cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
+      probeService: _buildProbeService('<html></html>'),
+      apiClient: FakeSiteApiClient(
+        _buildLoggedOutProfile,
+        searchLoader: ({
+          required String query,
+          required int page,
+          required String qType,
+        }) async {
+          searchLoadCount += 1;
+          expect(query, 'robot');
+          expect(page, 2);
+          expect(qType, 'author');
+          return DiscoverPageData(
+            title: '搜索',
+            uri: 'https://example.com/search?page=2&q=robot&q_type=author',
+            filters: const <FilterGroupData>[],
+            items: const <ComicCardData>[
+              ComicCardData(
+                title: 'Robot Hero',
+                coverUrl: '',
+                href: 'https://example.com/comic/robot-hero',
+              ),
+            ],
+            pager: const PagerData(
+              currentLabel: '2',
+              totalLabel: '共3页 · 25条',
+            ),
+            spotlight: const <ComicCardData>[],
+          );
+        },
+      ),
+      standardPageLoader: (Uri uri, {required String authScope}) async {
+        loaderCount += 1;
+        return HomePageData(
+          title: 'should-not-load',
+          uri: uri.toString(),
+          heroBanners: const <HeroBannerData>[],
+          sections: const <ComicSectionData>[],
+        );
+      },
+    );
+
+    final Uri searchUri = Uri.parse(
+      'https://example.com/search?q=robot&page=2&q_type=author',
+    );
+    final EasyCopyPage page = await repository.loadFresh(
+      searchUri,
+      authScope: 'guest',
+    );
+
+    expect(page, isA<DiscoverPageData>());
+    expect(loaderCount, 0);
+    expect(searchLoadCount, 1);
   });
 }
 
@@ -289,7 +349,10 @@ Future<ProfilePageData> _buildLoggedOutProfile() async {
 }
 
 class FakeSiteApiClient extends SiteApiClient {
-  FakeSiteApiClient(this._loader)
+  FakeSiteApiClient(
+    this._loader, {
+    this.searchLoader,
+  })
     : super(
         client: MockClient(
           (http.Request request) async =>
@@ -298,9 +361,40 @@ class FakeSiteApiClient extends SiteApiClient {
       );
 
   final Future<ProfilePageData> Function() _loader;
+  final Future<DiscoverPageData> Function({
+    required String query,
+    required int page,
+    required String qType,
+  })? searchLoader;
 
   @override
   Future<ProfilePageData> loadProfile() {
     return _loader();
+  }
+
+  @override
+  Future<DiscoverPageData> loadSearchResults({
+    required String query,
+    int page = 1,
+    String qType = '',
+  }) {
+    final Future<DiscoverPageData> Function({
+      required String query,
+      required int page,
+      required String qType,
+    })? loader = searchLoader;
+    if (loader == null) {
+      return Future<DiscoverPageData>.value(
+        DiscoverPageData(
+          title: '搜索',
+          uri: 'https://example.com/search?q=$query',
+          filters: const <FilterGroupData>[],
+          items: const <ComicCardData>[],
+          pager: const PagerData(),
+          spotlight: const <ComicCardData>[],
+        ),
+      );
+    }
+    return loader(query: query, page: page, qType: qType);
   }
 }

@@ -314,11 +314,7 @@ class _HostSettingsEntryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String normalizedCurrentHost = currentHost.trim().toLowerCase();
-    final String? pinnedHost = snapshot?.sessionPinnedHost
-        ?.trim()
-        .toLowerCase();
-    final String modeLabel = pinnedHost == null ? '自动选择' : '手动锁定';
+    final String? pinnedHost = snapshot?.sessionPinnedHost?.trim().toLowerCase();
 
     return AppSurfaceCard(
       title: '节点设置',
@@ -326,43 +322,15 @@ class _HostSettingsEntryCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text(
-            normalizedCurrentHost.isEmpty ? '还没有节点信息。' : normalizedCurrentHost,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 6),
-          Text(
             pinnedHost == null
-                ? '当前使用自动选择，可进入二级页面查看测速结果和切换节点。'
-                : '当前已手动锁定到 $pinnedHost，可进入二级页面恢复自动选择。',
+                ? '管理备用网址测速、自动选择和手动切换。'
+                : '当前已手动锁定节点，可进入二级页面恢复自动选择或切换其他节点。',
             style: TextStyle(
               color: Theme.of(context).colorScheme.onSurface.withValues(
                 alpha: 0.72,
               ),
               height: 1.5,
             ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: <Widget>[
-                    _HostSummaryChip(label: '模式', value: modeLabel),
-                    if (snapshot != null)
-                      _HostSummaryChip(
-                        label: '最近测速',
-                        value: _formatCheckedAt(snapshot!.checkedAt),
-                      ),
-                    _HostSummaryChip(
-                      label: '候选数',
-                      value: '${candidateHosts.length}',
-                    ),
-                  ],
-                ),
-              ),
-            ],
           ),
           const SizedBox(height: 16),
           SizedBox(

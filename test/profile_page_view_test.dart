@@ -249,7 +249,7 @@ void main() {
 
     expect(find.text('节点设置'), findsOneWidget);
     expect(find.text('管理节点'), findsOneWidget);
-    expect(find.text('beta.example'), findsOneWidget);
+    expect(find.text('beta.example'), findsNothing);
 
     await tester.tap(find.text('管理节点'));
     await tester.pumpAndSettle();
