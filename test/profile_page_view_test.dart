@@ -38,43 +38,44 @@ void main() {
     expect(authTaps, 1);
   });
 
-  testWidgets('ProfilePageView renders appearance settings and forwards theme changes', (
-    WidgetTester tester,
-  ) async {
-    AppThemePreference? selectedTheme;
+  testWidgets(
+    'ProfilePageView renders appearance settings and forwards theme changes',
+    (WidgetTester tester) async {
+      AppThemePreference? selectedTheme;
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: ProfilePageView(
-              page: ProfilePageData.loggedOut(
-                uri: 'https://www.2026copy.com/person/home',
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: ProfilePageView(
+                page: ProfilePageData.loggedOut(
+                  uri: 'https://www.2026copy.com/person/home',
+                ),
+                onAuthenticate: () {},
+                onLogout: () {},
+                onOpenComic: (_) {},
+                onOpenHistory: (_) {},
+                themePreference: AppThemePreference.system,
+                onThemePreferenceChanged: (AppThemePreference value) {
+                  selectedTheme = value;
+                },
               ),
-              onAuthenticate: () {},
-              onLogout: () {},
-              onOpenComic: (_) {},
-              onOpenHistory: (_) {},
-              themePreference: AppThemePreference.system,
-              onThemePreferenceChanged: (AppThemePreference value) {
-                selectedTheme = value;
-              },
             ),
           ),
         ),
-      ),
-    );
+      );
 
-    expect(find.text('外观'), findsOneWidget);
-    expect(find.text('跟随系统'), findsOneWidget);
+      expect(find.text('外观'), findsOneWidget);
+      expect(find.text('跟随系统'), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.keyboard_arrow_down_rounded));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('深色').last);
-    await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_down_rounded));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('深色').last);
+      await tester.pumpAndSettle();
 
-    expect(selectedTheme, AppThemePreference.dark);
-  });
+      expect(selectedTheme, AppThemePreference.dark);
+    },
+  );
 
   testWidgets('ProfilePageView keeps cached entry visible when logged out', (
     WidgetTester tester,
@@ -105,6 +106,7 @@ void main() {
     'ProfilePageView renders native profile sections when logged in',
     (WidgetTester tester) async {
       int logoutTaps = 0;
+      String? openedComic;
       ProfileHistoryItem? openedHistory;
 
       final ProfilePageData page = ProfilePageData(
@@ -153,7 +155,9 @@ void main() {
                 onLogout: () {
                   logoutTaps += 1;
                 },
-                onOpenComic: (_) {},
+                onOpenComic: (String href) {
+                  openedComic = href;
+                },
                 onOpenHistory: (ProfileHistoryItem item) {
                   openedHistory = item;
                 },
@@ -168,10 +172,15 @@ void main() {
       expect(find.text('我的收藏'), findsOneWidget);
       expect(find.text('浏览历史'), findsOneWidget);
 
+      await tester.ensureVisible(find.text('第10话'));
+      await tester.tap(find.text('第10话'));
+      await tester.pumpAndSettle();
+      expect(openedHistory?.chapterHref, contains('/chapter/10'));
+
       await tester.ensureVisible(find.text('第3话'));
       await tester.tap(find.text('第3话'));
       await tester.pumpAndSettle();
-      expect(openedHistory?.chapterHref, contains('/chapter/3'));
+      expect(openedComic, contains('/comic/recent'));
 
       await tester.ensureVisible(find.byIcon(Icons.logout_rounded));
       await tester.tap(find.byIcon(Icons.logout_rounded));

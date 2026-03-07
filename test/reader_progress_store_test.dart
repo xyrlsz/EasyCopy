@@ -56,4 +56,49 @@ void main() {
     expect(position?.pageIndex, 7);
     expect(position?.pageOffset, 64);
   });
+
+  test(
+    'ReaderProgressStore tracks the latest chapter for a comic detail page',
+    () async {
+      final Directory tempDirectory = await Directory.systemTemp.createTemp(
+        'easy_copy_reader_progress_catalog_',
+      );
+      addTearDown(() => tempDirectory.delete(recursive: true));
+
+      final List<DateTime> timestamps = <DateTime>[
+        DateTime(2026, 3, 7, 10, 0),
+        DateTime(2026, 3, 7, 10, 5),
+      ];
+      int timestampIndex = 0;
+
+      final ReaderProgressStore store = ReaderProgressStore(
+        directoryProvider: () async => tempDirectory,
+        now: () => timestamps[timestampIndex++],
+      );
+
+      await store.writePosition(
+        'chapter-10',
+        ReaderPosition.scroll(offset: 180),
+        catalogHref: 'https://www.2026copy.com/comic/demo',
+        chapterHref: 'https://www.2026copy.com/comic/demo/chapter/10',
+      );
+      await store.markChapterOpened(
+        key: 'chapter-11',
+        catalogHref: 'https://www.2026copy.com/comic/demo',
+        chapterHref: 'https://www.2026copy.com/comic/demo/chapter/11',
+      );
+
+      final ReaderProgressStore restoredStore = ReaderProgressStore(
+        directoryProvider: () async => tempDirectory,
+      );
+      await restoredStore.ensureInitialized();
+
+      expect(
+        restoredStore.latestChapterPathKeyForCatalog(
+          'https://www.2026copy.com/comic/demo',
+        ),
+        '/comic/demo/chapter/11',
+      );
+    },
+  );
 }

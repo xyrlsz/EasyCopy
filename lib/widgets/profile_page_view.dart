@@ -3,6 +3,7 @@ import 'package:easy_copy/models/app_preferences.dart';
 import 'package:easy_copy/models/page_models.dart';
 import 'package:easy_copy/services/host_manager.dart';
 import 'package:easy_copy/services/image_cache.dart';
+import 'package:easy_copy/widgets/comic_grid.dart';
 import 'package:flutter/material.dart';
 
 import 'package:easy_copy/widgets/settings_ui.dart';
@@ -49,6 +50,12 @@ class ProfilePageView extends StatelessWidget {
         currentHost.trim().isNotEmpty ||
         candidateHosts.isNotEmpty ||
         hostSnapshot != null;
+    final List<ComicCardData> collectionCards = page.collections
+        .map(_collectionCardData)
+        .toList(growable: false);
+    final List<ComicCardData> historyCards = page.history
+        .map(_historyCardData)
+        .toList(growable: false);
     final List<Widget> sections = <Widget>[
       page.isLoggedIn && page.user != null
           ? _buildUserCard(context, page.user!)
@@ -104,23 +111,42 @@ class ProfilePageView extends StatelessWidget {
       sections.add(
         _SectionCard(
           title: '我的收藏',
-          child: SizedBox(
-            height: 212,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: page.collections.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 12),
-              itemBuilder: (BuildContext context, int index) {
-                final ProfileLibraryItem item = page.collections[index];
-                return SizedBox(
-                  width: 136,
-                  child: _LibraryCard(
-                    item: item,
-                    onTap: () => onOpenComic(item.href),
-                  ),
-                );
-              },
-            ),
+          action: _SectionActionButton(
+            semanticLabel: '查看全部收藏',
+            onTap: () {
+              _openComicCollectionPage(
+                context,
+                title: '我的收藏',
+                summary: '共 ${collectionCards.length} 部漫画',
+                items: collectionCards,
+                emptyMessage: '还没有收藏的漫画。',
+              );
+            },
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              _SectionCaption('共 ${collectionCards.length} 部漫画'),
+              const SizedBox(height: 14),
+              SizedBox(
+                height: 232,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: collectionCards.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 12),
+                  itemBuilder: (BuildContext context, int index) {
+                    final ComicCardData item = collectionCards[index];
+                    return SizedBox(
+                      width: 136,
+                      child: _LibraryCard(
+                        item: item,
+                        onTap: () => onOpenComic(item.href),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         ),
       );
@@ -130,23 +156,92 @@ class ProfilePageView extends StatelessWidget {
       sections.add(
         _SectionCard(
           title: '浏览历史',
+          action: _SectionActionButton(
+            semanticLabel: '查看全部历史',
+            onTap: () {
+              _openComicCollectionPage(
+                context,
+                title: '浏览历史',
+                summary: '共 ${historyCards.length} 条记录',
+                items: historyCards,
+                emptyMessage: '还没有浏览历史。',
+              );
+            },
+          ),
           child: Column(
-            children: page.history
-                .map(
-                  (ProfileHistoryItem item) => Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: _HistoryTile(
-                      item: item,
-                      onTap: () => onOpenHistory(item),
-                    ),
-                  ),
-                )
-                .toList(growable: false),
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              _SectionCaption('最近浏览 ${historyCards.length} 条记录'),
+              const SizedBox(height: 14),
+              SizedBox(
+                height: 232,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: historyCards.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 12),
+                  itemBuilder: (BuildContext context, int index) {
+                    final ComicCardData item = historyCards[index];
+                    return SizedBox(
+                      width: 136,
+                      child: _LibraryCard(
+                        item: item,
+                        onTap: () => onOpenComic(item.href),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         ),
       );
     }
     return Column(children: sections);
+  }
+
+  ComicCardData _collectionCardData(ProfileLibraryItem item) {
+    return ComicCardData(
+      title: item.title,
+      subtitle: item.subtitle,
+      secondaryText: item.secondaryText,
+      coverUrl: item.coverUrl,
+      href: item.href,
+    );
+  }
+
+  ComicCardData _historyCardData(ProfileHistoryItem item) {
+    return ComicCardData(
+      title: item.title,
+      subtitle: item.chapterLabel,
+      secondaryText: item.visitedAt,
+      coverUrl: item.coverUrl,
+      href: item.comicHref,
+    );
+  }
+
+  void _openComicCollectionPage(
+    BuildContext context, {
+    required String title,
+    required String summary,
+    required List<ComicCardData> items,
+    required String emptyMessage,
+  }) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) {
+          return _ProfileComicCollectionPage(
+            title: title,
+            summary: summary,
+            items: items,
+            emptyMessage: emptyMessage,
+            onTap: (String href) {
+              Navigator.of(context).pop();
+              onOpenComic(href);
+            },
+          );
+        },
+      ),
+    );
   }
 
   Widget _buildLoggedOutCard() {
@@ -314,7 +409,9 @@ class _HostSettingsEntryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String? pinnedHost = snapshot?.sessionPinnedHost?.trim().toLowerCase();
+    final String? pinnedHost = snapshot?.sessionPinnedHost
+        ?.trim()
+        .toLowerCase();
 
     return AppSurfaceCard(
       title: '节点设置',
@@ -326,9 +423,9 @@ class _HostSettingsEntryCard extends StatelessWidget {
                 ? '管理备用网址测速、自动选择和手动切换。'
                 : '当前已手动锁定节点，可进入二级页面恢复自动选择或切换其他节点。',
             style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurface.withValues(
-                alpha: 0.72,
-              ),
+              color: Theme.of(
+                context,
+              ).colorScheme.onSurface.withValues(alpha: 0.72),
               height: 1.5,
             ),
           ),
@@ -361,7 +458,6 @@ class _HostSettingsEntryCard extends StatelessWidget {
       ),
     );
   }
-
 }
 
 String _formatCheckedAt(DateTime checkedAt) {
@@ -463,7 +559,9 @@ class _HostSettingsPage extends StatelessWidget {
                             ? const SizedBox(
                                 width: 16,
                                 height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.speed_rounded),
                         label: Text(isRefreshing ? '测速中' : '重新测速'),
@@ -476,9 +574,9 @@ class _HostSettingsPage extends StatelessWidget {
                         ? '当前使用自动选择。点击下方节点可手动锁定。'
                         : '当前已手动锁定到 $pinnedHost。点击其他节点可立即切换。',
                     style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurface.withValues(
-                        alpha: 0.72,
-                      ),
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.72),
                       height: 1.5,
                     ),
                   ),
@@ -500,9 +598,9 @@ class _HostSettingsPage extends StatelessWidget {
                 child: Text(
                   '还没有可用的节点信息。',
                   style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurface.withValues(
-                      alpha: 0.68,
-                    ),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 0.68),
                   ),
                 ),
               )
@@ -728,16 +826,124 @@ class _HostStateBadge extends StatelessWidget {
 }
 
 class _SectionCard extends StatelessWidget {
-  const _SectionCard({required this.child, this.title});
+  const _SectionCard({required this.child, this.title, this.action});
 
   final String? title;
+  final Widget? action;
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    return AppSurfaceCard(
-      title: title,
-      child: child,
+    return AppSurfaceCard(title: title, action: action, child: child);
+  }
+}
+
+class _SectionCaption extends StatelessWidget {
+  const _SectionCaption(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: TextStyle(
+        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.68),
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+      ),
+    );
+  }
+}
+
+class _SectionActionButton extends StatelessWidget {
+  const _SectionActionButton({
+    required this.semanticLabel,
+    required this.onTap,
+  });
+
+  final String semanticLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    return Semantics(
+      button: true,
+      label: semanticLabel,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(999),
+          child: Ink(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest.withValues(
+                alpha: 0.72,
+              ),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Icon(
+              Icons.chevron_right_rounded,
+              color: colorScheme.onSurface,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileComicCollectionPage extends StatelessWidget {
+  const _ProfileComicCollectionPage({
+    required this.title,
+    required this.summary,
+    required this.items,
+    required this.emptyMessage,
+    required this.onTap,
+  });
+
+  final String title;
+  final String summary;
+  final List<ComicCardData> items;
+  final String emptyMessage;
+  final ValueChanged<String> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: <Widget>[
+            AppSurfaceCard(
+              title: title,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    summary,
+                    style: TextStyle(
+                      color: colorScheme.onSurface.withValues(alpha: 0.7),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  ComicGrid(
+                    items: items,
+                    onTap: onTap,
+                    emptyMessage: emptyMessage,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -773,7 +979,7 @@ class _AvatarImage extends StatelessWidget {
 class _LibraryCard extends StatelessWidget {
   const _LibraryCard({required this.item, required this.onTap});
 
-  final ProfileLibraryItem item;
+  final ComicCardData item;
   final VoidCallback onTap;
 
   @override
@@ -812,10 +1018,24 @@ class _LibraryCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurface.withValues(
-                  alpha: 0.66,
-                ),
+                color: Theme.of(
+                  context,
+                ).colorScheme.onSurface.withValues(alpha: 0.66),
                 fontSize: 11,
+              ),
+            ),
+          ],
+          if (item.secondaryText.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 3),
+            Text(
+              item.secondaryText,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Theme.of(
+                  context,
+                ).colorScheme.onSurface.withValues(alpha: 0.5),
+                fontSize: 10,
               ),
             ),
           ],

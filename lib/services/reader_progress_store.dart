@@ -19,16 +19,10 @@ class ReaderPosition {
   });
 
   factory ReaderPosition.scroll({double offset = 0}) {
-    return ReaderPosition(
-      mode: ReaderProgressMode.scroll,
-      offset: offset,
-    );
+    return ReaderPosition(mode: ReaderProgressMode.scroll, offset: offset);
   }
 
-  factory ReaderPosition.paged({
-    int pageIndex = 0,
-    double pageOffset = 0,
-  }) {
+  factory ReaderPosition.paged({int pageIndex = 0, double pageOffset = 0}) {
     return ReaderPosition(
       mode: ReaderProgressMode.paged,
       pageIndex: pageIndex,
@@ -91,12 +85,16 @@ class ReaderProgressEntry {
     required this.key,
     required this.position,
     required this.updatedAt,
+    this.catalogPathKey = '',
+    this.chapterPathKey = '',
   });
 
   factory ReaderProgressEntry.fromJson(Map<String, Object?> json) {
     return ReaderProgressEntry(
       key: (json['key'] as String?) ?? '',
       position: ReaderPosition.fromJson(json),
+      catalogPathKey: (json['catalogPathKey'] as String?) ?? '',
+      chapterPathKey: (json['chapterPathKey'] as String?) ?? '',
       updatedAt:
           DateTime.tryParse((json['updatedAt'] as String?) ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
@@ -106,15 +104,21 @@ class ReaderProgressEntry {
   final String key;
   final ReaderPosition position;
   final DateTime updatedAt;
+  final String catalogPathKey;
+  final String chapterPathKey;
 
   ReaderProgressEntry copyWith({
     ReaderPosition? position,
     DateTime? updatedAt,
+    String? catalogPathKey,
+    String? chapterPathKey,
   }) {
     return ReaderProgressEntry(
       key: key,
       position: position ?? this.position,
       updatedAt: updatedAt ?? this.updatedAt,
+      catalogPathKey: catalogPathKey ?? this.catalogPathKey,
+      chapterPathKey: chapterPathKey ?? this.chapterPathKey,
     );
   }
 
@@ -122,6 +126,8 @@ class ReaderProgressEntry {
     return <String, Object?>{
       'key': key,
       ...position.toJson(),
+      'catalogPathKey': catalogPathKey,
+      'chapterPathKey': chapterPathKey,
       'updatedAt': updatedAt.toIso8601String(),
     };
   }
@@ -165,7 +171,66 @@ class ReaderProgressStore {
     return position.offset;
   }
 
-  Future<void> writePosition(String key, ReaderPosition position) async {
+  String? latestChapterPathKeyForCatalog(String catalogHref) {
+    final String targetCatalogPathKey = _pathKey(catalogHref);
+    if (targetCatalogPathKey.isEmpty) {
+      return null;
+    }
+    for (final ReaderProgressEntry entry in _entries) {
+      if (entry.catalogPathKey == targetCatalogPathKey &&
+          entry.chapterPathKey.isNotEmpty) {
+        return entry.chapterPathKey;
+      }
+    }
+    return null;
+  }
+
+  Future<void> markChapterOpened({
+    required String key,
+    required String catalogHref,
+    required String chapterHref,
+  }) async {
+    await ensureInitialized();
+    final String normalizedKey = key.trim();
+    if (normalizedKey.isEmpty) {
+      return;
+    }
+    final String catalogPathKey = _pathKey(catalogHref);
+    final String chapterPathKey = _pathKey(chapterHref);
+    if (catalogPathKey.isEmpty || chapterPathKey.isEmpty) {
+      return;
+    }
+    final DateTime now = _now();
+    final int index = _entries.indexWhere(
+      (ReaderProgressEntry entry) => entry.key == normalizedKey,
+    );
+    if (index >= 0) {
+      _entries[index] = _entries[index].copyWith(
+        updatedAt: now,
+        catalogPathKey: catalogPathKey,
+        chapterPathKey: chapterPathKey,
+      );
+    } else {
+      _entries.add(
+        ReaderProgressEntry(
+          key: normalizedKey,
+          position: ReaderPosition.scroll(offset: 0),
+          updatedAt: now,
+          catalogPathKey: catalogPathKey,
+          chapterPathKey: chapterPathKey,
+        ),
+      );
+    }
+    _trim();
+    await _persist();
+  }
+
+  Future<void> writePosition(
+    String key,
+    ReaderPosition position, {
+    String catalogHref = '',
+    String chapterHref = '',
+  }) async {
     await ensureInitialized();
     final String normalizedKey = key.trim();
     if (normalizedKey.isEmpty) {
@@ -173,6 +238,8 @@ class ReaderProgressStore {
     }
 
     final ReaderPosition normalizedPosition = _normalizePosition(position);
+    final String catalogPathKey = _pathKey(catalogHref);
+    final String chapterPathKey = _pathKey(chapterHref);
     final DateTime now = _now();
     final int index = _entries.indexWhere(
       (ReaderProgressEntry entry) => entry.key == normalizedKey,
@@ -181,6 +248,12 @@ class ReaderProgressStore {
       _entries[index] = _entries[index].copyWith(
         position: normalizedPosition,
         updatedAt: now,
+        catalogPathKey: catalogPathKey.isEmpty
+            ? _entries[index].catalogPathKey
+            : catalogPathKey,
+        chapterPathKey: chapterPathKey.isEmpty
+            ? _entries[index].chapterPathKey
+            : chapterPathKey,
       );
     } else {
       _entries.add(
@@ -188,6 +261,8 @@ class ReaderProgressStore {
           key: normalizedKey,
           position: normalizedPosition,
           updatedAt: now,
+          catalogPathKey: catalogPathKey,
+          chapterPathKey: chapterPathKey,
         ),
       );
     }
@@ -264,6 +339,14 @@ class ReaderProgressStore {
           ? position.offset
           : 0,
     );
+  }
+
+  String _pathKey(String href) {
+    final Uri? uri = Uri.tryParse(href.trim());
+    if (uri == null) {
+      return '';
+    }
+    return uri.path.trim();
   }
 
   void _trim() {

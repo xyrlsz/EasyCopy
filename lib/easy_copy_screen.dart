@@ -22,6 +22,7 @@ import 'package:easy_copy/services/site_session.dart';
 import 'package:easy_copy/services/standard_page_load_controller.dart';
 import 'package:easy_copy/webview/page_extractor_script.dart';
 import 'package:easy_copy/widgets/auth_webview_screen.dart';
+import 'package:easy_copy/widgets/comic_grid.dart';
 import 'package:easy_copy/widgets/native_login_screen.dart';
 import 'package:easy_copy/widgets/profile_page_view.dart';
 import 'package:easy_copy/widgets/settings_ui.dart';
@@ -98,6 +99,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   bool _isProcessingDownloadQueue = false;
   bool _isUpdatingHostSettings = false;
   bool _isReaderSettingsOpen = false;
+  bool _isReaderChapterControlsVisible = false;
   bool _readerPresentationSyncScheduled = false;
   bool _suspendStandardScrollTracking = false;
   int _currentReaderPageIndex = 0;
@@ -2286,10 +2288,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         })
         .toList(growable: false);
     unawaited(EasyCopyImageCaches.prefetchReaderImages(remoteImages));
+    unawaited(_markReaderChapterVisited(page));
     final bool changedPage = previousUri != page.uri;
     if (changedPage) {
       _currentReaderPageIndex = 0;
       _currentVisibleReaderImageIndex = 0;
+      _isReaderChapterControlsVisible = false;
       _disposeReaderPagedScrollControllers();
       _readerImageItemKeys.clear();
     }
@@ -2302,6 +2306,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         ),
       );
     }
+  }
+
+  Future<void> _markReaderChapterVisited(ReaderPageData page) {
+    return _readerProgressStore.markChapterOpened(
+      key: _readerProgressKeyForPage(page),
+      catalogHref: page.catalogHref,
+      chapterHref: page.uri,
+    );
   }
 
   Future<void> _restoreReaderPosition(
@@ -2504,7 +2516,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
             : 0,
       );
       _lastPersistedReaderPosition = position;
-      unawaited(_readerProgressStore.writePosition(progressKey, position));
+      unawaited(
+        _readerProgressStore.writePosition(
+          progressKey,
+          position,
+          catalogHref: page.catalogHref,
+          chapterHref: page.uri,
+        ),
+      );
       return;
     }
     if (!_readerScrollController.hasClients) {
@@ -2514,7 +2533,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       offset: _readerScrollController.offset,
     );
     _lastPersistedReaderPosition = position;
-    unawaited(_readerProgressStore.writePosition(progressKey, position));
+    unawaited(
+      _readerProgressStore.writePosition(
+        progressKey,
+        position,
+        catalogHref: page.catalogHref,
+        chapterHref: page.uri,
+      ),
+    );
   }
 
   void _persistVisiblePageState() {
@@ -2841,7 +2867,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     ];
 
     if (_page == null) {
-      children.addAll(_buildLoadingSections());
+      children.addAll(_buildLoadingSections(context));
       return children;
     }
 
@@ -3303,6 +3329,10 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     return Uri(path: AppConfig.rewriteToCurrentHost(uri).path).toString();
   }
 
+  String _lastReadChapterPathKeyForDetail(DetailPageData page) {
+    return _readerProgressStore.latestChapterPathKeyForCatalog(page.uri) ?? '';
+  }
+
   List<_ChapterPickerSection> _chapterPickerSections(DetailPageData page) {
     if (page.chapterGroups.isNotEmpty) {
       return page.chapterGroups
@@ -3542,30 +3572,34 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     );
   }
 
-  List<Widget> _buildLoadingSections() {
-    return <Widget>[
-      _buildLoadingCard(height: 220),
-      const SizedBox(height: 18),
-      _buildLoadingCard(height: 176),
-      const SizedBox(height: 18),
-      _buildLoadingCard(height: 320),
-    ];
+  List<Widget> _buildLoadingSections(BuildContext context) {
+    return <Widget>[_buildLoadingIndicator(context)];
   }
 
-  Widget _buildLoadingCard({required double height}) {
-    return AppSurfaceCard(
-      padding: EdgeInsets.zero,
-      child: SizedBox(
-        height: height,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: const <Widget>[
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('正在整理可读内容'),
-            ],
-          ),
+  Widget _buildLoadingIndicator(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final double height = MediaQuery.sizeOf(context).height * 0.52;
+    return SizedBox(
+      height: height.clamp(260, 480),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '正在整理可读内容',
+              style: TextStyle(
+                color: colorScheme.onSurface.withValues(alpha: 0.88),
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -3720,7 +3754,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
           onActionTap: section.href.isNotEmpty
               ? () => _navigateToHref(section.href)
               : null,
-          child: _ComicGrid(items: section.items, onTap: _navigateToHref),
+          child: ComicGrid(items: section.items, onTap: _navigateToHref),
         ),
       );
       sections.add(const SizedBox(height: 18));
@@ -3797,7 +3831,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
             if (_isLoading) _buildInlineSectionLoadingIndicator(),
             _buildAnimatedSectionContent(
               contentKey: _discoverListContentKey(page),
-              child: _ComicGrid(items: page.items, onTap: _navigateToHref),
+              child: ComicGrid(items: page.items, onTap: _navigateToHref),
             ),
           ],
         ),
@@ -3923,6 +3957,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   List<Widget> _buildDetailSections(DetailPageData page) {
     final Set<String> downloadedChapterKeys =
         _downloadedChapterPathKeysForDetail(page);
+    final String lastReadChapterPathKey = _lastReadChapterPathKeyForDetail(
+      page,
+    );
     final List<Widget> sections = <Widget>[
       _DetailHeroCard(
         page: page,
@@ -3978,6 +4015,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
             chapters: group.chapters,
             onTap: (String href) => _openDetailChapter(page, href),
             downloadedChapterPathKeys: downloadedChapterKeys,
+            lastReadChapterPathKey: lastReadChapterPathKey,
           ),
         );
         chapterWidgets.add(const SizedBox(height: 18));
@@ -3988,6 +4026,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
           chapters: page.chapters,
           onTap: (String href) => _openDetailChapter(page, href),
           downloadedChapterPathKeys: downloadedChapterKeys,
+          lastReadChapterPathKey: lastReadChapterPathKey,
         ),
       );
     }
@@ -4050,6 +4089,39 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     if (mounted) {
       _scheduleReaderPresentationSync();
     }
+  }
+
+  void _toggleReaderChapterControls() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isReaderChapterControlsVisible = !_isReaderChapterControlsVisible;
+    });
+  }
+
+  void _hideReaderChapterControls() {
+    if (!mounted || !_isReaderChapterControlsVisible) {
+      return;
+    }
+    setState(() {
+      _isReaderChapterControlsVisible = false;
+    });
+  }
+
+  void _handleReaderTapUp(TapUpDetails details) {
+    final BuildContext? viewportContext = _readerViewportKey.currentContext;
+    final RenderBox? renderBox =
+        viewportContext?.findRenderObject() as RenderBox?;
+    final double viewportHeight = renderBox != null && renderBox.hasSize
+        ? renderBox.size.height
+        : details.localPosition.dy * 2;
+    if (details.localPosition.dy <= viewportHeight * 0.5) {
+      _hideReaderChapterControls();
+      unawaited(_showReaderSettingsSheet());
+      return;
+    }
+    _toggleReaderChapterControls();
   }
 
   Widget _buildReaderSettingsSheet(BuildContext context) {
@@ -4470,6 +4542,37 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     );
   }
 
+  Widget _buildReaderChapterControlsOverlay(
+    BuildContext context,
+    ReaderPageData page,
+  ) {
+    final EdgeInsets viewPadding = MediaQuery.viewPaddingOf(context);
+    final double horizontalPadding = _readerPreferences.showPageGap ? 12 : 0;
+    final double bottomPadding =
+        (viewPadding.bottom > 0 ? viewPadding.bottom : 0) + 12;
+    return Positioned(
+      left: horizontalPadding,
+      right: horizontalPadding,
+      bottom: bottomPadding,
+      child: IgnorePointer(
+        ignoring: !_isReaderChapterControlsVisible,
+        child: AnimatedSlide(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          offset: _isReaderChapterControlsVisible
+              ? Offset.zero
+              : const Offset(0, 1.08),
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            opacity: _isReaderChapterControlsVisible ? 1 : 0,
+            child: _buildReaderChapterControls(context, page),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildReaderScrollableContent(
     BuildContext context,
     ReaderPageData page,
@@ -4622,41 +4725,26 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
 
   Widget _buildReaderMode(BuildContext context, ReaderPageData page) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
-    final EdgeInsets viewPadding = MediaQuery.viewPaddingOf(context);
     return Scaffold(
       backgroundColor: colorScheme.surfaceContainerLowest,
-      body: Column(
-        children: <Widget>[
-          Expanded(
-            child: SizedBox(
-              key: _readerViewportKey,
+      body: SizedBox(
+        key: _readerViewportKey,
+        child: Stack(
+          fit: StackFit.expand,
+          children: <Widget>[
+            Positioned.fill(
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
-                onTap: _showReaderSettingsSheet,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: <Widget>[
-                    Positioned.fill(
-                      child: _readerPreferences.isPaged
-                          ? _buildReaderPagedContent(context, page)
-                          : _buildReaderScrollableContent(context, page),
-                    ),
-                    _buildReaderOverlay(context, page),
-                  ],
-                ),
+                onTapUp: _handleReaderTapUp,
+                child: _readerPreferences.isPaged
+                    ? _buildReaderPagedContent(context, page)
+                    : _buildReaderScrollableContent(context, page),
               ),
             ),
-          ),
-          Padding(
-            padding: EdgeInsets.fromLTRB(
-              _readerPreferences.showPageGap ? 12 : 0,
-              8,
-              _readerPreferences.showPageGap ? 12 : 0,
-              (viewPadding.bottom > 0 ? viewPadding.bottom : 0) + 12,
-            ),
-            child: _buildReaderChapterControls(context, page),
-          ),
-        ],
+            _buildReaderOverlay(context, page),
+            _buildReaderChapterControlsOverlay(context, page),
+          ],
+        ),
       ),
     );
   }
@@ -4921,141 +5009,6 @@ class _FeatureBannerCard extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _ComicGrid extends StatelessWidget {
-  const _ComicGrid({required this.items, required this.onTap});
-
-  final List<ComicCardData> items;
-  final ValueChanged<String> onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    if (items.isEmpty) {
-      return const Text('暫時沒有可展示的內容。');
-    }
-
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: items.length,
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 12,
-        mainAxisSpacing: 14,
-        childAspectRatio: 0.50,
-      ),
-      itemBuilder: (BuildContext context, int index) {
-        final ComicCardData item = items[index];
-        return _ComicCard(item: item, onTap: () => onTap(item.href));
-      },
-    );
-  }
-}
-
-class _ComicCard extends StatelessWidget {
-  const _ComicCard({required this.item, required this.onTap});
-
-  final ComicCardData item;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final ColorScheme colorScheme = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: LayoutBuilder(
-        builder: (BuildContext context, BoxConstraints constraints) {
-          final double coverHeight = constraints.maxHeight * 0.64;
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              SizedBox(
-                height: coverHeight,
-                child: Stack(
-                  children: <Widget>[
-                    Positioned.fill(
-                      child: _NetworkImageBox(
-                        imageUrl: item.coverUrl,
-                        aspectRatio: 0.72,
-                      ),
-                    ),
-                    if (item.badge.isNotEmpty)
-                      Positioned(
-                        left: 8,
-                        top: 8,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 5,
-                          ),
-                          decoration: BoxDecoration(
-                            color: colorScheme.secondary,
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            item.badge,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      item.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        height: 1.2,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    if (item.subtitle.isNotEmpty) ...<Widget>[
-                      const SizedBox(height: 4),
-                      Text(
-                        item.subtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: colorScheme.onSurface.withValues(alpha: 0.72),
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                    if (item.secondaryText.isNotEmpty) ...<Widget>[
-                      const SizedBox(height: 3),
-                      Text(
-                        item.secondaryText,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: colorScheme.onSurface.withValues(alpha: 0.56),
-                          fontSize: 10,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-          );
-        },
       ),
     );
   }
@@ -5562,24 +5515,29 @@ class _ChapterGrid extends StatelessWidget {
     required this.chapters,
     required this.onTap,
     this.downloadedChapterPathKeys = const <String>{},
+    this.lastReadChapterPathKey = '',
   });
 
   final List<ChapterData> chapters;
   final ValueChanged<String> onTap;
   final Set<String> downloadedChapterPathKeys;
+  final String lastReadChapterPathKey;
 
   @override
   Widget build(BuildContext context) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    const Color lastReadColor = Color(0xFF1F4B99);
+    const Color lastReadBorderColor = Color(0xFF173872);
+    final bool showsLastReadState = lastReadChapterPathKey.isNotEmpty;
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       itemCount: chapters.length,
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
         crossAxisSpacing: 10,
         mainAxisSpacing: 10,
-        childAspectRatio: 2.6,
+        childAspectRatio: showsLastReadState ? 2.15 : 2.42,
       ),
       itemBuilder: (BuildContext context, int index) {
         final ChapterData chapter = chapters[index];
@@ -5589,36 +5547,84 @@ class _ChapterGrid extends StatelessWidget {
         final bool isDownloaded = downloadedChapterPathKeys.contains(
           chapterPathKey,
         );
+        final bool isLastRead =
+            lastReadChapterPathKey.isNotEmpty &&
+            chapterPathKey == lastReadChapterPathKey;
         return InkWell(
           onTap: () => onTap(chapter.href),
           borderRadius: BorderRadius.circular(18),
           child: Ink(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color: isDownloaded
+              color: isLastRead
+                  ? lastReadColor
+                  : isDownloaded
                   ? colorScheme.primaryContainer.withValues(alpha: 0.38)
                   : colorScheme.surfaceContainerLow,
               borderRadius: BorderRadius.circular(18),
-              border: isDownloaded
+              border: isLastRead
+                  ? Border.all(color: lastReadBorderColor, width: 1.2)
+                  : isDownloaded
                   ? Border.all(color: const Color(0xFF18A558))
                   : null,
             ),
             child: Row(
               children: <Widget>[
                 Expanded(
-                  child: Text(
-                    chapter.label,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        chapter.label,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.1,
+                          fontWeight: FontWeight.w800,
+                          color: isLastRead ? Colors.white : null,
+                        ),
+                      ),
+                      if (isLastRead) ...<Widget>[
+                        const SizedBox(height: 2),
+                        Text(
+                          '上次看到这里',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.84),
+                            fontSize: 10,
+                            height: 1.1,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-                if (isDownloaded) ...<Widget>[
-                  const SizedBox(width: 8),
-                  const Icon(
-                    Icons.check_circle_rounded,
-                    size: 18,
-                    color: Color(0xFF18A558),
+                if (isLastRead || isDownloaded) ...<Widget>[
+                  const SizedBox(width: 6),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: <Widget>[
+                      if (isLastRead)
+                        const Icon(
+                          Icons.bookmark_rounded,
+                          size: 16,
+                          color: Colors.white,
+                        ),
+                      if (isDownloaded) ...<Widget>[
+                        if (isLastRead) const SizedBox(height: 4),
+                        const Icon(
+                          Icons.check_circle_rounded,
+                          size: 16,
+                          color: Color(0xFF18A558),
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ],
