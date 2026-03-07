@@ -19,6 +19,7 @@ import 'package:easy_copy/services/primary_tab_session_store.dart';
 import 'package:easy_copy/services/reader_platform_bridge.dart';
 import 'package:easy_copy/services/reader_progress_store.dart';
 import 'package:easy_copy/services/site_session.dart';
+import 'package:easy_copy/services/standard_page_load_controller.dart';
 import 'package:easy_copy/webview/page_extractor_script.dart';
 import 'package:easy_copy/widgets/auth_webview_screen.dart';
 import 'package:easy_copy/widgets/native_login_screen.dart';
@@ -38,10 +39,7 @@ Widget _buildFadeSwitchTransition(Widget child, Animation<double> animation) {
 }
 
 class EasyCopyScreen extends StatefulWidget {
-  const EasyCopyScreen({
-    super.key,
-    this.preferencesController,
-  });
+  const EasyCopyScreen({super.key, this.preferencesController});
 
   final AppPreferencesController? preferencesController;
 
@@ -114,7 +112,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   final Map<int, GlobalKey> _readerImageItemKeys = <int, GlobalKey>{};
   StreamSubscription<int>? _batterySubscription;
   StreamSubscription<ReaderVolumeKeyAction>? _volumeKeySubscription;
-  _PendingPageLoad? _pendingPageLoad;
+  final StandardPageLoadController<EasyCopyPage> _standardPageLoadController =
+      StandardPageLoadController<EasyCopyPage>();
   NavigationIntent? _nextFreshNavigationIntent;
   bool? _nextFreshPreserveCurrentPage;
 
@@ -144,9 +143,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
           _batteryLevel = level;
         });
       });
-      _volumeKeySubscription = _readerPlatformBridge.volumeKeyEventStream.listen(
-        _handleReaderVolumeKeyAction,
-      );
+      _volumeKeySubscription = _readerPlatformBridge.volumeKeyEventStream
+          .listen(_handleReaderVolumeKeyAction);
     }
     unawaited(_bootstrap());
     _syncSearchController();
@@ -175,6 +173,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
 
   PrimaryTabRouteEntry get _currentEntry =>
       _tabSessionStore.currentEntry(_selectedIndex);
+
+  StandardPageLoadHandle<EasyCopyPage>? get _pendingPageLoad =>
+      _standardPageLoadController.pendingLoad;
 
   Uri get _currentUri => _currentEntry.uri;
 
@@ -228,16 +229,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     setState(() {});
 
     final bool requiresReaderRestore =
-        previousPreferences.readingDirection != nextPreferences.readingDirection ||
+        previousPreferences.readingDirection !=
+            nextPreferences.readingDirection ||
         previousPreferences.pageFit != nextPreferences.pageFit ||
         previousPreferences.openingPosition != nextPreferences.openingPosition;
     final EasyCopyPage? page = _page;
     if (requiresReaderRestore && page is ReaderPageData) {
-      _handleReaderPageLoaded(
-        page,
-        previousUri: page.uri,
-        forceRestore: true,
-      );
+      _handleReaderPageLoaded(page, previousUri: page.uri, forceRestore: true);
       return;
     }
     _scheduleReaderPresentationSync();
@@ -271,7 +269,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     if (!_readerScrollController.hasClients) {
       return;
     }
-    final double viewportExtent = _readerScrollController.position.viewportDimension;
+    final double viewportExtent =
+        _readerScrollController.position.viewportDimension;
     final double maxExtent = _readerScrollController.position.maxScrollExtent;
     final double nextOffset = (_readerScrollController.offset + viewportExtent)
         .clamp(0, maxExtent)
@@ -299,7 +298,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     if (!_readerScrollController.hasClients) {
       return;
     }
-    final double viewportExtent = _readerScrollController.position.viewportDimension;
+    final double viewportExtent =
+        _readerScrollController.position.viewportDimension;
     final double previousOffset =
         (_readerScrollController.offset - viewportExtent)
             .clamp(0, _readerScrollController.position.maxScrollExtent)
@@ -338,9 +338,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         return;
       }
       final EasyCopyPage? page = _page;
-      unawaited(
-        _applyReaderEnvironment(page is ReaderPageData ? page : null),
-      );
+      unawaited(_applyReaderEnvironment(page is ReaderPageData ? page : null));
     });
   }
 
@@ -360,8 +358,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         await _restoreDefaultReaderEnvironment();
       } else {
         await SystemChrome.setPreferredOrientations(
-          nextEnvironment.orientation ==
-                  ReaderScreenOrientation.landscape
+          nextEnvironment.orientation == ReaderScreenOrientation.landscape
               ? const <DeviceOrientation>[
                   DeviceOrientation.landscapeLeft,
                   DeviceOrientation.landscapeRight,
@@ -383,7 +380,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       }
     }
 
-    _syncReaderClockTicker(enabled: page != null && _readerPreferences.showClock);
+    _syncReaderClockTicker(
+      enabled: page != null && _readerPreferences.showClock,
+    );
     if (page == null) {
       _readerAutoTurnTimer?.cancel();
       _readerAutoTurnTimer = null;
@@ -442,7 +441,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         if (!_readerScrollController.hasClients) {
           return;
         }
-        final double maxExtent = _readerScrollController.position.maxScrollExtent;
+        final double maxExtent =
+            _readerScrollController.position.maxScrollExtent;
         final double viewportExtent =
             _readerScrollController.position.viewportDimension;
         final double nextOffset =
@@ -463,7 +463,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }
 
   void _disposeReaderPagedScrollControllers() {
-    final List<ScrollController> controllers = _readerPageScrollControllers.values
+    final List<ScrollController> controllers = _readerPageScrollControllers
+        .values
         .toList(growable: false);
     _readerPageScrollControllers.clear();
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -502,11 +503,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     if (viewportContext == null) {
       return;
     }
-    final RenderObject? viewportRenderObject = viewportContext.findRenderObject();
+    final RenderObject? viewportRenderObject = viewportContext
+        .findRenderObject();
     if (viewportRenderObject is! RenderBox) {
       return;
     }
-    final double viewportTop = viewportRenderObject.localToGlobal(Offset.zero).dy;
+    final double viewportTop = viewportRenderObject
+        .localToGlobal(Offset.zero)
+        .dy;
     final double viewportCenter =
         viewportTop + (viewportRenderObject.size.height / 2);
     int bestIndex = _currentVisibleReaderImageIndex;
@@ -578,24 +582,55 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
               return NavigationDecision.prevent;
             }
 
-            _setPendingLocation(nextUri ?? _currentUri);
+            final Uri rewrittenUri = AppConfig.rewriteToCurrentHost(
+              nextUri ?? _currentUri,
+            );
+            if (_shouldAcceptPendingNavigationUri(
+              rewrittenUri,
+              source: StandardPageLoadEventSource.navigationRequest,
+            )) {
+              _setPendingLocation(rewrittenUri);
+            }
             return NavigationDecision.navigate;
           },
           onPageStarted: (String url) {
+            final Uri startedUri = AppConfig.rewriteToCurrentHost(
+              Uri.tryParse(url) ?? _currentUri,
+            );
+            if (!_shouldAcceptPendingNavigationUri(
+              startedUri,
+              source: StandardPageLoadEventSource.pageStarted,
+            )) {
+              return;
+            }
             _startLoading(
-              AppConfig.rewriteToCurrentHost(Uri.tryParse(url) ?? _currentUri),
+              startedUri,
               preserveCurrentPage:
                   _pendingPageLoad?.preserveCurrentPage ?? false,
             );
           },
           onPageFinished: (String url) async {
-            final int loadId = _activeLoadId;
+            final StandardPageLoadHandle<EasyCopyPage>? pendingLoad =
+                _pendingPageLoad;
+            if (pendingLoad == null || pendingLoad.completer.isCompleted) {
+              return;
+            }
+            final Uri finishedUri = AppConfig.rewriteToCurrentHost(
+              Uri.tryParse(url) ?? _currentUri,
+            );
+            if (!pendingLoad.accepts(
+              finishedUri,
+              source: StandardPageLoadEventSource.pageFinished,
+            )) {
+              return;
+            }
             try {
               await _controller.runJavaScript(
-                buildPageExtractionScript(loadId),
+                buildPageExtractionScript(pendingLoad.loadId),
               );
             } catch (_) {
-              if (!mounted || loadId != _activeLoadId) {
+              if (!mounted ||
+                  !_standardPageLoadController.isCurrent(pendingLoad)) {
                 return;
               }
               _failPendingPageLoad('頁面已加載，但轉換內容失敗。');
@@ -605,10 +640,28 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
             if (change.url == null) {
               return;
             }
-            _setPendingLocation(Uri.tryParse(change.url!) ?? _currentUri);
+            final Uri changedUri = AppConfig.rewriteToCurrentHost(
+              Uri.tryParse(change.url!) ?? _currentUri,
+            );
+            if (_shouldAcceptPendingNavigationUri(
+              changedUri,
+              source: StandardPageLoadEventSource.urlChange,
+            )) {
+              _setPendingLocation(changedUri);
+            }
           },
           onWebResourceError: (WebResourceError error) {
             if (error.isForMainFrame == false) {
+              return;
+            }
+            final Uri? failingUri = error.url == null
+                ? null
+                : Uri.tryParse(error.url!);
+            if (failingUri != null &&
+                !_shouldAcceptPendingNavigationUri(
+                  AppConfig.rewriteToCurrentHost(failingUri),
+                  source: StandardPageLoadEventSource.mainFrameError,
+                )) {
               return;
             }
             unawaited(
@@ -666,7 +719,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }
 
   void _handleBridgeMessage(JavaScriptMessage message) {
-    final _PendingPageLoad? pendingLoad = _pendingPageLoad;
+    final StandardPageLoadHandle<EasyCopyPage>? pendingLoad = _pendingPageLoad;
     if (pendingLoad == null || pendingLoad.completer.isCompleted) {
       return;
     }
@@ -681,12 +734,19 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       );
 
       final int loadId = (payload['loadId'] as num?)?.toInt() ?? -1;
-      if (loadId != _activeLoadId || loadId != pendingLoad.loadId) {
+      if (loadId != pendingLoad.loadId) {
         return;
       }
 
       payload.remove('loadId');
       final EasyCopyPage page = PageCacheStore.restorePagePayload(payload);
+      final Uri pageUri = AppConfig.rewriteToCurrentHost(Uri.parse(page.uri));
+      if (!pendingLoad.accepts(
+        pageUri,
+        source: StandardPageLoadEventSource.payload,
+      )) {
+        return;
+      }
       _consecutiveFrameFailures = 0;
       _applyLoadedPage(
         page,
@@ -694,7 +754,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         switchToTab: _selectedIndex == pendingLoad.targetTabIndex,
       );
       pendingLoad.completer.complete(page);
-      _pendingPageLoad = null;
+      _standardPageLoadController.clear(pendingLoad);
     } catch (_) {
       _failPendingPageLoad('轉換資料解析失敗。');
     }
@@ -1263,6 +1323,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     };
   }
 
+  bool _shouldAcceptPendingNavigationUri(
+    Uri uri, {
+    required StandardPageLoadEventSource source,
+  }) {
+    final StandardPageLoadHandle<EasyCopyPage>? pendingLoad = _pendingPageLoad;
+    if (pendingLoad == null || pendingLoad.completer.isCompleted) {
+      return true;
+    }
+    return pendingLoad.accepts(uri, source: source);
+  }
+
   void _setPendingLocation(Uri uri) {
     final Uri rewrittenUri = AppConfig.rewriteToCurrentHost(uri);
     final int tabIndex =
@@ -1374,6 +1445,16 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     }, syncSearch: tabIndex == _selectedIndex);
   }
 
+  void _finishMatchingRouteLoading(
+    int tabIndex,
+    String routeKey, {
+    String? message,
+  }) {
+    _mutateSessionState(() {
+      _tabSessionStore.updateError(tabIndex, routeKey, message);
+    }, syncSearch: tabIndex == _selectedIndex);
+  }
+
   Future<EasyCopyPage> _loadStandardPageFresh(
     Uri uri, {
     required String authScope,
@@ -1381,26 +1462,28 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
     final int loadId = ++_activeLoadId;
     final bool preserveCurrentPage = _nextFreshPreserveCurrentPage ?? false;
-    final _PendingPageLoad pendingLoad = _PendingPageLoad(
-      requestedUri: targetUri,
-      queryKey: _pageQueryKeyForUri(targetUri, authScope: authScope),
-      intent: _nextFreshNavigationIntent ?? NavigationIntent.preserve,
-      preserveCurrentPage: preserveCurrentPage,
-      loadId: loadId,
-      targetTabIndex: tabIndexForUri(targetUri),
-      completer: Completer<EasyCopyPage>(),
-    );
+    final StandardPageLoadHandle<EasyCopyPage> pendingLoad =
+        StandardPageLoadHandle<EasyCopyPage>(
+          requestedUri: targetUri,
+          queryKey: _pageQueryKeyForUri(targetUri, authScope: authScope),
+          intent: _nextFreshNavigationIntent ?? NavigationIntent.preserve,
+          preserveCurrentPage: preserveCurrentPage,
+          loadId: loadId,
+          targetTabIndex: tabIndexForUri(targetUri),
+          completer: Completer<EasyCopyPage>(),
+        );
     _nextFreshNavigationIntent = null;
     _nextFreshPreserveCurrentPage = null;
-    _pendingPageLoad = pendingLoad;
+    _standardPageLoadController.begin(pendingLoad);
     await _syncSessionCookiesToCurrentHost();
+    if (!_standardPageLoadController.isCurrent(pendingLoad)) {
+      throw const SupersededPageLoadException();
+    }
     await _controller.loadRequest(targetUri);
     return pendingLoad.completer.future.timeout(
       const Duration(seconds: 30),
       onTimeout: () {
-        if (identical(_pendingPageLoad, pendingLoad)) {
-          _pendingPageLoad = null;
-        }
+        _standardPageLoadController.clear(pendingLoad);
         throw TimeoutException('页面解析超时');
       },
     );
@@ -1439,14 +1522,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }
 
   void _failPendingPageLoad(String message) {
-    final _PendingPageLoad? pendingLoad = _pendingPageLoad;
+    final StandardPageLoadHandle<EasyCopyPage>? pendingLoad = _pendingPageLoad;
     if (pendingLoad == null) {
       return;
     }
     if (!pendingLoad.completer.isCompleted) {
       pendingLoad.completer.completeError(message);
     }
-    _pendingPageLoad = null;
+    _standardPageLoadController.clear(pendingLoad);
 
     final PrimaryTabRouteEntry currentEntry = _tabSessionStore.currentEntry(
       pendingLoad.targetTabIndex,
@@ -1629,9 +1712,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         );
         return;
       }
-      _finishTabEntryLoading(targetTabIndex);
+      _finishMatchingRouteLoading(targetTabIndex, key.routeKey);
+    } on SupersededPageLoadException {
+      _finishMatchingRouteLoading(targetTabIndex, key.routeKey);
     } catch (_) {
-      _finishTabEntryLoading(targetTabIndex);
+      _finishMatchingRouteLoading(targetTabIndex, key.routeKey);
     } finally {
       _nextFreshPreserveCurrentPage = null;
     }
@@ -1701,6 +1786,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     required int targetTabIndex,
     required String routeKey,
   }) async {
+    if (error is SupersededPageLoadException) {
+      _finishMatchingRouteLoading(targetTabIndex, routeKey);
+      return;
+    }
+
     final String message = error.toString();
     if (message.contains('登录已失效')) {
       await _logout(showFeedback: false);
@@ -1823,12 +1913,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }) async {
     final _CachedChapterNavigationContext resolvedContext =
         _resolvedCachedChapterContext(targetUri, context: context);
-    final ReaderPageData? cachedPage = await _downloadService.loadCachedReaderPage(
-      targetUri.toString(),
-      prevHref: resolvedContext.prevHref,
-      nextHref: resolvedContext.nextHref,
-      catalogHref: resolvedContext.catalogHref,
-    );
+    final ReaderPageData? cachedPage = await _downloadService
+        .loadCachedReaderPage(
+          targetUri.toString(),
+          prevHref: resolvedContext.prevHref,
+          nextHref: resolvedContext.nextHref,
+          catalogHref: resolvedContext.catalogHref,
+        );
     if (cachedPage == null) {
       return false;
     }
@@ -2188,11 +2279,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     String? previousUri,
     bool forceRestore = false,
   }) {
-    final List<String> remoteImages = page.imageUrls.where((String imageUrl) {
-      final Uri? uri = Uri.tryParse(imageUrl);
-      return uri != null &&
-          (uri.scheme == 'http' || uri.scheme == 'https');
-    }).toList(growable: false);
+    final List<String> remoteImages = page.imageUrls
+        .where((String imageUrl) {
+          final Uri? uri = Uri.tryParse(imageUrl);
+          return uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
+        })
+        .toList(growable: false);
     unawaited(EasyCopyImageCaches.prefetchReaderImages(remoteImages));
     final bool changedPage = previousUri != page.uri;
     if (changedPage) {
@@ -2217,9 +2309,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     required bool resetControllers,
   }) async {
     final String progressKey = _readerProgressKeyForPage(page);
-    final ReaderPosition? savedPosition =
-        await _readerProgressStore.readPosition(progressKey);
-    if (!mounted || _page is! ReaderPageData || (_page as ReaderPageData).uri != page.uri) {
+    final ReaderPosition? savedPosition = await _readerProgressStore
+        .readPosition(progressKey);
+    if (!mounted ||
+        _page is! ReaderPageData ||
+        (_page as ReaderPageData).uri != page.uri) {
       return;
     }
 
@@ -2242,11 +2336,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _jumpReaderToPage(pageIndex, attempts: 10);
-        _jumpReaderPageOffset(
-          pageIndex,
-          offset: pageOffset,
-          attempts: 10,
-        );
+        _jumpReaderPageOffset(pageIndex, offset: pageOffset, attempts: 10);
       });
       return;
     }
@@ -2273,7 +2363,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     }
 
     final double maxExtent = _readerScrollController.position.maxScrollExtent;
-    final double targetOffset = offset ??
+    final double targetOffset =
+        offset ??
         (_readerPreferences.openingPosition == ReaderOpeningPosition.center
             ? (_readerScrollController.position.viewportDimension * 0.5)
             : 0);
@@ -2306,7 +2397,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     required double? offset,
     required int attempts,
   }) {
-    final ScrollController? controller = _readerPageScrollControllers[pageIndex];
+    final ScrollController? controller =
+        _readerPageScrollControllers[pageIndex];
     if (controller == null || !controller.hasClients) {
       if (attempts > 0) {
         Future<void>.delayed(
@@ -2321,7 +2413,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       return;
     }
     final double maxExtent = controller.position.maxScrollExtent;
-    final double targetOffset = offset ??
+    final double targetOffset =
+        offset ??
         (_readerPreferences.openingPosition == ReaderOpeningPosition.center
             ? maxExtent * 0.5
             : 0);
@@ -2367,7 +2460,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     if (pageIndex != _currentReaderPageIndex) {
       return;
     }
-    final ScrollController? controller = _readerPageScrollControllers[pageIndex];
+    final ScrollController? controller =
+        _readerPageScrollControllers[pageIndex];
     if (controller == null || !controller.hasClients) {
       return;
     }
@@ -2405,8 +2499,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
           _readerPageScrollControllers[_currentReaderPageIndex];
       final ReaderPosition position = ReaderPosition.paged(
         pageIndex: _currentReaderPageIndex,
-        pageOffset:
-            pageController != null && pageController.hasClients
+        pageOffset: pageController != null && pageController.hasClients
             ? pageController.offset
             : 0,
       );
@@ -2833,10 +2926,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
             ),
             child: Row(
               children: <Widget>[
-                Icon(
-                  Icons.search_rounded,
-                  color: colorScheme.primary,
-                ),
+                Icon(Icons.search_rounded, color: colorScheme.primary),
                 const SizedBox(width: 10),
                 Expanded(
                   child: TextField(
@@ -3041,7 +3131,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 12),
                           child: Material(
-                            color: Theme.of(context).colorScheme.surfaceContainerLow,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerLow,
                             borderRadius: BorderRadius.circular(18),
                             child: ListTile(
                               contentPadding: const EdgeInsets.fromLTRB(
@@ -3053,9 +3145,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                               leading: CircleAvatar(
                                 backgroundColor: isActiveComic
                                     ? Theme.of(context).colorScheme.primary
-                                    : Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest,
+                                    : Theme.of(
+                                        context,
+                                      ).colorScheme.surfaceContainerHighest,
                                 foregroundColor: Colors.white,
                                 child: Text('${tasks.length}'),
                               ),
@@ -3464,7 +3556,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     return AppSurfaceCard(
       padding: EdgeInsets.zero,
       child: SizedBox(
-      height: height,
+        height: height,
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -3504,9 +3596,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
               _currentUri.toString(),
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurface.withValues(
-                  alpha: 0.62,
-                ),
+                color: Theme.of(
+                  context,
+                ).colorScheme.onSurface.withValues(alpha: 0.62),
                 fontSize: 12,
               ),
             ),
@@ -4012,12 +4104,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                                   return;
                                 }
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(
-                                          screenOrientation: value,
-                                        ),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) => current
+                                            .copyWith(screenOrientation: value),
+                                      ),
                                 );
                               },
                             ),
@@ -4030,16 +4121,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                                       ReaderReadingDirection
                                     >(
                                       value: value,
-                                      child: Text(
-                                        switch (value) {
-                                          ReaderReadingDirection.topToBottom =>
-                                            '从上到下',
-                                          ReaderReadingDirection.leftToRight =>
-                                            '从左到右',
-                                          ReaderReadingDirection.rightToLeft =>
-                                            '从右到左',
-                                        },
-                                      ),
+                                      child: Text(switch (value) {
+                                        ReaderReadingDirection.topToBottom =>
+                                          '从上到下',
+                                        ReaderReadingDirection.leftToRight =>
+                                          '从左到右',
+                                        ReaderReadingDirection.rightToLeft =>
+                                          '从右到左',
+                                      }),
                                     );
                                   })
                                   .toList(growable: false),
@@ -4048,12 +4137,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                                   return;
                                 }
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(
-                                          readingDirection: value,
-                                        ),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) => current
+                                            .copyWith(readingDirection: value),
+                                      ),
                                 );
                               },
                             ),
@@ -4077,10 +4165,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                                   return;
                                 }
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(pageFit: value),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) =>
+                                            current.copyWith(pageFit: value),
+                                      ),
                                 );
                               },
                             ),
@@ -4106,28 +4195,30 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                                   return;
                                 }
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(
-                                          openingPosition: value,
-                                        ),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) => current
+                                            .copyWith(openingPosition: value),
+                                      ),
                                 );
                               },
                             ),
                             SettingsSliderRow(
-                              label: '自动翻页(${preferences.autoPageTurnSeconds}秒)',
+                              label:
+                                  '自动翻页(${preferences.autoPageTurnSeconds}秒)',
                               value: preferences.autoPageTurnSeconds.toDouble(),
                               max: 10,
                               divisions: 10,
                               onChanged: (double value) {
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(
-                                          autoPageTurnSeconds: value.round(),
-                                        ),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) =>
+                                            current.copyWith(
+                                              autoPageTurnSeconds: value
+                                                  .round(),
+                                            ),
+                                      ),
                                 );
                               },
                             ),
@@ -4141,10 +4232,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                               value: preferences.keepScreenOn,
                               onChanged: (bool value) {
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(keepScreenOn: value),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) => current
+                                            .copyWith(keepScreenOn: value),
+                                      ),
                                 );
                               },
                             ),
@@ -4153,10 +4245,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                               value: preferences.showClock,
                               onChanged: (bool value) {
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(showClock: value),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) =>
+                                            current.copyWith(showClock: value),
+                                      ),
                                 );
                               },
                             ),
@@ -4165,10 +4258,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                               value: preferences.showProgress,
                               onChanged: (bool value) {
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(showProgress: value),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) => current
+                                            .copyWith(showProgress: value),
+                                      ),
                                 );
                               },
                             ),
@@ -4180,10 +4274,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                                   unawaited(
                                     _preferencesController
                                         .updateReaderPreferences(
-                                          (ReaderPreferences current) =>
-                                              current.copyWith(
-                                                showBattery: value,
-                                              ),
+                                          (ReaderPreferences current) => current
+                                              .copyWith(showBattery: value),
                                         ),
                                   );
                                 },
@@ -4193,10 +4285,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                               value: preferences.showPageGap,
                               onChanged: (bool value) {
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(showPageGap: value),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) => current
+                                            .copyWith(showPageGap: value),
+                                      ),
                                 );
                               },
                             ),
@@ -4221,10 +4314,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
                               value: preferences.fullscreen,
                               onChanged: (bool value) {
                                 unawaited(
-                                  _preferencesController.updateReaderPreferences(
-                                    (ReaderPreferences current) =>
-                                        current.copyWith(fullscreen: value),
-                                  ),
+                                  _preferencesController
+                                      .updateReaderPreferences(
+                                        (ReaderPreferences current) =>
+                                            current.copyWith(fullscreen: value),
+                                      ),
                                 );
                               },
                             ),
@@ -4415,7 +4509,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
 
   Widget _buildReaderPagedContent(BuildContext context, ReaderPageData page) {
     final bool reverse =
-        _readerPreferences.readingDirection == ReaderReadingDirection.rightToLeft;
+        _readerPreferences.readingDirection ==
+        ReaderReadingDirection.rightToLeft;
     return PageView.builder(
       key: ValueKey<String>(
         'reader-paged-${page.uri}-${_readerPreferences.readingDirection.name}-${_readerPreferences.pageFit.name}-${_readerPreferences.showPageGap}',
@@ -4475,11 +4570,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
             width: double.infinity,
             height: viewportHeight,
             errorBuilder:
-                (
-                  BuildContext context,
-                  Object error,
-                  StackTrace? stackTrace,
-                ) {
+                (BuildContext context, Object error, StackTrace? stackTrace) {
                   return SizedBox(
                     height: viewportHeight ?? 220,
                     child: const Center(
@@ -4495,11 +4586,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
             height: viewportHeight,
             cacheManager: EasyCopyImageCaches.readerCache,
             progressIndicatorBuilder:
-                (
-                  BuildContext context,
-                  String url,
-                  DownloadProgress progress,
-                ) {
+                (BuildContext context, String url, DownloadProgress progress) {
                   return SizedBox(
                     height: viewportHeight ?? 260,
                     child: Center(
@@ -4521,7 +4608,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: showGap ? colorScheme.surface : colorScheme.surfaceContainerLowest,
+        color: showGap
+            ? colorScheme.surface
+            : colorScheme.surfaceContainerLowest,
         borderRadius: BorderRadius.circular(borderRadius),
       ),
       child: ClipRRect(
@@ -5661,10 +5750,7 @@ class _ChapterPickerSection {
 }
 
 class _AdjacentChapterLinks {
-  const _AdjacentChapterLinks({
-    this.prevHref = '',
-    this.nextHref = '',
-  });
+  const _AdjacentChapterLinks({this.prevHref = '', this.nextHref = ''});
 
   final String prevHref;
   final String nextHref;
@@ -5685,26 +5771,6 @@ class _CachedChapterNavigationContext {
       prevHref.trim().isNotEmpty ||
       nextHref.trim().isNotEmpty ||
       catalogHref.trim().isNotEmpty;
-}
-
-class _PendingPageLoad {
-  _PendingPageLoad({
-    required this.requestedUri,
-    required this.queryKey,
-    required this.intent,
-    required this.preserveCurrentPage,
-    required this.loadId,
-    required this.targetTabIndex,
-    required this.completer,
-  });
-
-  final Uri requestedUri;
-  final PageQueryKey queryKey;
-  final NavigationIntent intent;
-  final bool preserveCurrentPage;
-  final int loadId;
-  final int targetTabIndex;
-  final Completer<EasyCopyPage> completer;
 }
 
 class _NetworkImageBox extends StatelessWidget {
