@@ -58,6 +58,13 @@ void main() {
       );
       expect(
         resolveNavigationTabIndex(
+          Uri.parse('https://www.2026copy.com/comic/demo'),
+          sourceTabIndex: 2,
+        ),
+        2,
+      );
+      expect(
+        resolveNavigationTabIndex(
           Uri.parse('https://www.2026copy.com/comics'),
           sourceTabIndex: 3,
         ),

@@ -414,6 +414,13 @@ const String _pageExtractionScriptTemplate = r"""
     const infoRows = Array.from(
       document.querySelectorAll('.comicParticulars-title-right li'),
     );
+    const collectButton = document.querySelector(
+      '.comicParticulars-botton.collect',
+    );
+    const collectText = text(collectButton);
+    const collectMatch = attr(collectButton, 'onclick').match(
+      /collect\('([^']+)'\)/,
+    );
     const rowByPrefix = (prefix) =>
       infoRows.find((row) => text(row.querySelector('span')).startsWith(prefix));
     const authors = mapText(
@@ -446,6 +453,11 @@ const String _pageExtractionScriptTemplate = r"""
           active: false,
         }))
         .filter((tag) => tag.label && tag.href),
+      comicId: collectMatch ? cleanText(collectMatch[1]) : '',
+      isCollected:
+        !!collectText &&
+        !collectText.includes('加入書架') &&
+        !collectText.includes('加入书架'),
       startReadingHref: linkUrl(
         document.querySelector('.comicParticulars-botton[href*="/chapter/"]'),
       ),

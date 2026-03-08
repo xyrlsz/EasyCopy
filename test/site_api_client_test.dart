@@ -172,54 +172,90 @@ void main() {
     expect(page.continueReading, isNull);
   });
 
-  test('loadSearchResults parses search API response into discover data', () async {
+  test(
+    'loadSearchResults parses search API response into discover data',
+    () async {
+      final SiteSession session = SiteSession(
+        store: _MemoryKeyValueStore(),
+        now: () => DateTime(2026, 3, 7, 11),
+      );
+
+      final SiteApiClient client = SiteApiClient(
+        session: session,
+        client: MockClient((http.Request request) async {
+          expect(request.url.path, '/api/kb/web/searchcd/comics');
+          expect(request.url.queryParameters['offset'], '12');
+          expect(request.url.queryParameters['limit'], '12');
+          expect(request.url.queryParameters['q'], '海賊王');
+          expect(request.url.queryParameters['q_type'], 'author');
+          return jsonResponse(<String, Object?>{
+            'code': 200,
+            'results': <String, Object?>{
+              'total': 25,
+              'list': <Object?>[
+                <String, Object?>{
+                  'name': '海賊王',
+                  'path_word': 'one-piece',
+                  'cover': 'https://img.example/one-piece.jpg',
+                  'author': <Object?>[
+                    <String, Object?>{'name': '尾田荣一郎'},
+                  ],
+                  'datetime_updated': '2026-03-07',
+                },
+              ],
+            },
+          });
+        }),
+      );
+
+      final DiscoverPageData page = await client.loadSearchResults(
+        query: '海賊王',
+        page: 2,
+        qType: 'author',
+      );
+
+      expect(page.uri, contains('/search?q='));
+      expect(page.uri, contains('page=2'));
+      expect(page.items, hasLength(1));
+      expect(page.items.single.title, '海賊王');
+      expect(
+        page.items.single.href,
+        'https://www.2026copy.com/comic/one-piece',
+      );
+      expect(page.items.single.subtitle, '作者：尾田荣一郎');
+      expect(page.pager.currentLabel, '2');
+      expect(page.pager.prevHref, contains('/search?q='));
+      expect(page.pager.nextHref, contains('page=3'));
+    },
+  );
+
+  test('setComicCollection posts the expected collect payload', () async {
     final SiteSession session = SiteSession(
       store: _MemoryKeyValueStore(),
-      now: () => DateTime(2026, 3, 7, 11),
+      now: () => DateTime(2026, 3, 7, 12),
+    );
+    await session.saveToken(
+      'token_collect',
+      cookies: const <String, String>{'token': 'token_collect'},
     );
 
     final SiteApiClient client = SiteApiClient(
       session: session,
       client: MockClient((http.Request request) async {
-        expect(request.url.path, '/api/kb/web/searchcd/comics');
-        expect(request.url.queryParameters['offset'], '12');
-        expect(request.url.queryParameters['limit'], '12');
-        expect(request.url.queryParameters['q'], '海賊王');
-        expect(request.url.queryParameters['q_type'], 'author');
+        expect(request.method, 'POST');
+        expect(request.url.path, '/api/v2/web/collect');
+        expect(request.headers['authorization'], 'Token token_collect');
+        expect(request.headers['cookie'], 'token=token_collect');
+        expect(request.bodyFields['comic_id'], 'comic-123');
+        expect(request.bodyFields['is_collect'], '1');
         return jsonResponse(<String, Object?>{
           'code': 200,
-          'results': <String, Object?>{
-            'total': 25,
-            'list': <Object?>[
-              <String, Object?>{
-                'name': '海賊王',
-                'path_word': 'one-piece',
-                'cover': 'https://img.example/one-piece.jpg',
-                'author': <Object?>[
-                  <String, Object?>{'name': '尾田荣一郎'},
-                ],
-                'datetime_updated': '2026-03-07',
-              },
-            ],
-          },
+          'message': '修改成功',
+          'results': null,
         });
       }),
     );
 
-    final DiscoverPageData page = await client.loadSearchResults(
-      query: '海賊王',
-      page: 2,
-      qType: 'author',
-    );
-
-    expect(page.uri, contains('/search?q='));
-    expect(page.uri, contains('page=2'));
-    expect(page.items, hasLength(1));
-    expect(page.items.single.title, '海賊王');
-    expect(page.items.single.href, 'https://www.2026copy.com/comic/one-piece');
-    expect(page.items.single.subtitle, '作者：尾田荣一郎');
-    expect(page.pager.currentLabel, '2');
-    expect(page.pager.prevHref, contains('/search?q='));
-    expect(page.pager.nextHref, contains('page=3'));
+    await client.setComicCollection(comicId: 'comic-123', isCollected: true);
   });
 }

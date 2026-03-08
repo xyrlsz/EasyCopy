@@ -15,6 +15,8 @@ class ProfilePageView extends StatelessWidget {
     required this.onLogout,
     required this.onOpenComic,
     required this.onOpenHistory,
+    this.onOpenCachedComic,
+    this.onDeleteCachedComic,
     this.currentHost = '',
     this.candidateHosts = const <String>[],
     this.hostSnapshot,
@@ -25,6 +27,7 @@ class ProfilePageView extends StatelessWidget {
     this.themePreference = AppThemePreference.system,
     this.onThemePreferenceChanged,
     this.afterContinueReading,
+    this.cachedComicCards = const <ComicCardData>[],
     super.key,
   });
 
@@ -33,6 +36,8 @@ class ProfilePageView extends StatelessWidget {
   final VoidCallback onLogout;
   final ValueChanged<String> onOpenComic;
   final ValueChanged<ProfileHistoryItem> onOpenHistory;
+  final ValueChanged<String>? onOpenCachedComic;
+  final ValueChanged<String>? onDeleteCachedComic;
   final String currentHost;
   final List<String> candidateHosts;
   final HostProbeSnapshot? hostSnapshot;
@@ -43,6 +48,7 @@ class ProfilePageView extends StatelessWidget {
   final AppThemePreference themePreference;
   final ValueChanged<AppThemePreference>? onThemePreferenceChanged;
   final Widget? afterContinueReading;
+  final List<ComicCardData> cachedComicCards;
 
   @override
   Widget build(BuildContext context) {
@@ -90,6 +96,58 @@ class ProfilePageView extends StatelessWidget {
       sections.add(afterContinueReading!);
     }
 
+    if (cachedComicCards.isNotEmpty) {
+      sections.add(const SizedBox(height: 18));
+      sections.add(
+        _SectionCard(
+          title: '已缓存漫画',
+          action: _SectionActionButton(
+            semanticLabel: '查看全部缓存',
+            onTap: () {
+              _openComicCollectionPage(
+                context,
+                title: '已缓存漫画',
+                summary: '共 ${cachedComicCards.length} 部漫画',
+                items: cachedComicCards,
+                emptyMessage: '还没有缓存的漫画。',
+                onTap: onOpenCachedComic ?? onOpenComic,
+                onLongPress: onDeleteCachedComic,
+              );
+            },
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              _SectionCaption('共 ${cachedComicCards.length} 部漫画'),
+              const SizedBox(height: 14),
+              SizedBox(
+                height: 232,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: cachedComicCards.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 12),
+                  itemBuilder: (BuildContext context, int index) {
+                    final ComicCardData item = cachedComicCards[index];
+                    return SizedBox(
+                      width: 136,
+                      child: _LibraryCard(
+                        item: item,
+                        onTap: () =>
+                            (onOpenCachedComic ?? onOpenComic)(item.href),
+                        onLongPress: onDeleteCachedComic == null
+                            ? null
+                            : () => onDeleteCachedComic!(item.href),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     if (!page.isLoggedIn || page.user == null) {
       return Column(children: sections);
     }
@@ -120,6 +178,7 @@ class ProfilePageView extends StatelessWidget {
                 summary: '共 ${collectionCards.length} 部漫画',
                 items: collectionCards,
                 emptyMessage: '还没有收藏的漫画。',
+                onTap: onOpenComic,
               );
             },
           ),
@@ -165,6 +224,7 @@ class ProfilePageView extends StatelessWidget {
                 summary: '共 ${historyCards.length} 条记录',
                 items: historyCards,
                 emptyMessage: '还没有浏览历史。',
+                onTap: onOpenComic,
               );
             },
           ),
@@ -225,6 +285,8 @@ class ProfilePageView extends StatelessWidget {
     required String summary,
     required List<ComicCardData> items,
     required String emptyMessage,
+    required ValueChanged<String> onTap,
+    ValueChanged<String>? onLongPress,
   }) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -236,8 +298,14 @@ class ProfilePageView extends StatelessWidget {
             emptyMessage: emptyMessage,
             onTap: (String href) {
               Navigator.of(context).pop();
-              onOpenComic(href);
+              onTap(href);
             },
+            onLongPress: onLongPress == null
+                ? null
+                : (String href) {
+                    Navigator.of(context).pop();
+                    onLongPress(href);
+                  },
           );
         },
       ),
@@ -903,6 +971,7 @@ class _ProfileComicCollectionPage extends StatelessWidget {
     required this.items,
     required this.emptyMessage,
     required this.onTap,
+    this.onLongPress,
   });
 
   final String title;
@@ -910,6 +979,7 @@ class _ProfileComicCollectionPage extends StatelessWidget {
   final List<ComicCardData> items;
   final String emptyMessage;
   final ValueChanged<String> onTap;
+  final ValueChanged<String>? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -936,6 +1006,7 @@ class _ProfileComicCollectionPage extends StatelessWidget {
                   ComicGrid(
                     items: items,
                     onTap: onTap,
+                    onLongPress: onLongPress,
                     emptyMessage: emptyMessage,
                   ),
                 ],
@@ -977,15 +1048,21 @@ class _AvatarImage extends StatelessWidget {
 }
 
 class _LibraryCard extends StatelessWidget {
-  const _LibraryCard({required this.item, required this.onTap});
+  const _LibraryCard({
+    required this.item,
+    required this.onTap,
+    this.onLongPress,
+  });
 
   final ComicCardData item;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

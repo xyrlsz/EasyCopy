@@ -10,7 +10,9 @@ import 'package:easy_copy/models/page_models.dart';
 import 'package:easy_copy/page_transition_scope.dart';
 import 'package:easy_copy/services/app_preferences_controller.dart';
 import 'package:easy_copy/services/comic_download_service.dart';
+import 'package:easy_copy/services/deferred_viewport_coordinator.dart';
 import 'package:easy_copy/services/display_mode_service.dart';
+import 'package:easy_copy/services/download_storage_service.dart';
 import 'package:easy_copy/services/download_queue_store.dart';
 import 'package:easy_copy/services/host_manager.dart';
 import 'package:easy_copy/services/image_cache.dart';
@@ -19,16 +21,20 @@ import 'package:easy_copy/services/page_repository.dart';
 import 'package:easy_copy/services/primary_tab_session_store.dart';
 import 'package:easy_copy/services/reader_platform_bridge.dart';
 import 'package:easy_copy/services/reader_progress_store.dart';
+import 'package:easy_copy/services/site_api_client.dart';
 import 'package:easy_copy/services/site_session.dart';
 import 'package:easy_copy/services/standard_page_load_controller.dart';
 import 'package:easy_copy/services/tab_activation_policy.dart';
 import 'package:easy_copy/webview/page_extractor_script.dart';
 import 'package:easy_copy/widgets/auth_webview_screen.dart';
 import 'package:easy_copy/widgets/comic_grid.dart';
+import 'package:easy_copy/widgets/download_management_page.dart';
 import 'package:easy_copy/widgets/native_login_screen.dart';
 import 'package:easy_copy/widgets/profile_page_view.dart';
 import 'package:easy_copy/widgets/settings_ui.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
@@ -78,8 +84,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       ReaderPlatformBridge.instance;
   final HostManager _hostManager = HostManager.instance;
   final SiteSession _session = SiteSession.instance;
+  final SiteApiClient _siteApiClient = SiteApiClient.instance;
   final ReaderProgressStore _readerProgressStore = ReaderProgressStore.instance;
   final ComicDownloadService _downloadService = ComicDownloadService.instance;
+  final DownloadStorageService _downloadStorageService =
+      DownloadStorageService.instance;
   final DownloadQueueStore _downloadQueueStore = DownloadQueueStore.instance;
   final PrimaryTabSessionStore _tabSessionStore = PrimaryTabSessionStore(
     rootUris: <int, Uri>{
@@ -89,6 +98,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   );
   final ValueNotifier<DownloadQueueSnapshot> _downloadQueueSnapshotNotifier =
       ValueNotifier<DownloadQueueSnapshot>(const DownloadQueueSnapshot());
+  final ValueNotifier<DownloadStorageState> _downloadStorageStateNotifier =
+      ValueNotifier<DownloadStorageState>(const DownloadStorageState.loading());
+  final ValueNotifier<bool> _downloadStorageBusyNotifier = ValueNotifier<bool>(
+    false,
+  );
   late final PageRepository _pageRepository;
   late PageController _readerPageController;
 
@@ -99,7 +113,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   bool _isDiscoverThemeExpanded = false;
   List<CachedComicLibraryEntry> _cachedComics =
       const <CachedComicLibraryEntry>[];
-  bool _isLoadingCachedComics = true;
   int _downloadActiveLoadId = 0;
   Completer<ReaderPageData>? _downloadExtractionCompleter;
   Timer? _readerProgressDebounce;
@@ -108,6 +121,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   ReaderPosition? _lastPersistedReaderPosition;
   bool _isProcessingDownloadQueue = false;
   bool _isUpdatingHostSettings = false;
+  bool _isUpdatingCollection = false;
   bool _isReaderSettingsOpen = false;
   bool _isReaderChapterControlsVisible = false;
   bool _isReaderExitTransitionActive = false;
@@ -121,12 +135,21 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   int? _batteryLevel;
   _AppliedReaderEnvironment? _appliedReaderEnvironment;
   ReaderPreferences? _lastObservedReaderPreferences;
-  final Set<String> _cancelledComicKeys = <String>{};
-  final Map<String, String> _cancelledComicTitles = <String, String>{};
+  DownloadPreferences? _lastObservedDownloadPreferences;
+  final Map<String, List<DownloadQueueTask>> _pendingCancelledTaskCleanups =
+      <String, List<DownloadQueueTask>>{};
+  final Map<String, String> _pendingCancelledComicDeletions =
+      <String, String>{};
   final Map<int, ScrollController> _readerPageScrollControllers =
       <int, ScrollController>{};
   final Map<int, GlobalKey> _readerImageItemKeys = <int, GlobalKey>{};
   final Map<String, GlobalKey> _detailChapterItemKeys = <String, GlobalKey>{};
+  final DeferredViewportCoordinator _standardScrollRestoreCoordinator =
+      DeferredViewportCoordinator();
+  final DeferredViewportCoordinator _detailChapterAutoScrollCoordinator =
+      DeferredViewportCoordinator();
+  final DeferredViewportCoordinator _readerRestoreCoordinator =
+      DeferredViewportCoordinator();
   String _handledDetailAutoScrollSignature = '';
   StreamSubscription<int>? _batterySubscription;
   StreamSubscription<ReaderVolumeKeyAction>? _volumeKeySubscription;
@@ -144,6 +167,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         widget.preferencesController ?? AppPreferencesController.instance;
     _readerPageController = PageController();
     _lastObservedReaderPreferences = _preferencesController.readerPreferences;
+    _lastObservedDownloadPreferences =
+        _preferencesController.downloadPreferences;
     _controller = _buildController();
     _downloadController = _buildDownloadController();
     _pageRepository = PageRepository(
@@ -189,6 +214,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     _standardScrollController.dispose();
     _readerScrollController.dispose();
     _downloadQueueSnapshotNotifier.dispose();
+    _downloadStorageStateNotifier.dispose();
+    _downloadStorageBusyNotifier.dispose();
     unawaited(_restoreDefaultReaderEnvironment());
     super.dispose();
   }
@@ -218,7 +245,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       _preferencesController.readerPreferences;
 
   String _authScopeForUri(Uri uri) {
-    if (_isProfileUri(uri)) {
+    if (_isProfileUri(uri) || _isUserScopedDetailUri(uri)) {
       return _session.authScope;
     }
     return 'guest';
@@ -252,6 +279,84 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     setState(mutation ?? () {});
   }
 
+  bool _isUserDrivenScrollNotification(ScrollNotification notification) {
+    if (notification.depth != 0) {
+      return false;
+    }
+    return switch (notification) {
+      ScrollStartNotification(:final DragStartDetails? dragDetails) =>
+        dragDetails != null,
+      ScrollUpdateNotification(:final DragUpdateDetails? dragDetails) =>
+        dragDetails != null,
+      OverscrollNotification(:final DragUpdateDetails? dragDetails) =>
+        dragDetails != null,
+      UserScrollNotification(:final direction) =>
+        direction != ScrollDirection.idle,
+      _ => false,
+    };
+  }
+
+  bool _handleStandardScrollNotification(ScrollNotification notification) {
+    if (_isUserDrivenScrollNotification(notification)) {
+      _noteStandardViewportUserInteraction();
+    }
+    return false;
+  }
+
+  bool _handleReaderScrollNotification(ScrollNotification notification) {
+    if (_isUserDrivenScrollNotification(notification)) {
+      _readerRestoreCoordinator.noteUserInteraction();
+    }
+    return false;
+  }
+
+  void _noteStandardViewportUserInteraction() {
+    _standardScrollRestoreCoordinator.noteUserInteraction();
+    _detailChapterAutoScrollCoordinator.noteUserInteraction();
+    _suspendStandardScrollTracking = false;
+  }
+
+  bool _isActiveStandardScrollRestore(
+    DeferredViewportTicket ticket, {
+    required int tabIndex,
+    required String routeKey,
+  }) {
+    return mounted &&
+        _standardScrollRestoreCoordinator.isActive(ticket) &&
+        !_isReaderMode &&
+        _selectedIndex == tabIndex &&
+        _currentEntry.routeKey == routeKey;
+  }
+
+  void _finishStandardScrollRestore(DeferredViewportTicket ticket) {
+    if (_standardScrollRestoreCoordinator.isLatestRequest(ticket)) {
+      _suspendStandardScrollTracking = false;
+    }
+  }
+
+  bool _isActiveDetailChapterAutoScroll(
+    DeferredViewportTicket ticket, {
+    required String routeKey,
+  }) {
+    return mounted &&
+        _detailChapterAutoScrollCoordinator.isActive(ticket) &&
+        _page is DetailPageData &&
+        _currentEntry.routeKey == routeKey;
+  }
+
+  bool _isActiveReaderRestore(
+    DeferredViewportTicket ticket, {
+    required String pageUri,
+    required bool isPaged,
+  }) {
+    final EasyCopyPage? page = _page;
+    return mounted &&
+        _readerRestoreCoordinator.isActive(ticket) &&
+        page is ReaderPageData &&
+        page.uri == pageUri &&
+        _readerPreferences.isPaged == isPaged;
+  }
+
   bool _shouldActivateAsyncResultTab(int targetTabIndex) {
     return shouldActivateTargetTab(
       currentSelectedIndex: _selectedIndex,
@@ -264,13 +369,28 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     final ReaderPreferences previousPreferences =
         _lastObservedReaderPreferences ?? _readerPreferences;
     final ReaderPreferences nextPreferences = _readerPreferences;
+    final DownloadPreferences previousDownloadPreferences =
+        _lastObservedDownloadPreferences ??
+        _preferencesController.downloadPreferences;
+    final DownloadPreferences nextDownloadPreferences =
+        _preferencesController.downloadPreferences;
     _lastObservedReaderPreferences = nextPreferences;
+    _lastObservedDownloadPreferences = nextDownloadPreferences;
 
     if (!mounted) {
       return;
     }
 
     setState(() {});
+
+    final bool downloadPreferencesChanged =
+        previousDownloadPreferences.mode != nextDownloadPreferences.mode ||
+        previousDownloadPreferences.customBasePath !=
+            nextDownloadPreferences.customBasePath;
+    if (downloadPreferencesChanged) {
+      unawaited(_refreshDownloadStorageState());
+      unawaited(_refreshCachedComics());
+    }
 
     final bool requiresReaderRestore =
         previousPreferences.readingDirection !=
@@ -289,10 +409,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     await Future.wait(<Future<void>>[
       _hostManager.ensureInitialized(),
       _session.ensureInitialized(),
+      _preferencesController.ensureInitialized(),
       _downloadQueueStore.ensureInitialized(),
       _readerProgressStore.ensureInitialized(),
     ]);
     await _refreshCachedComics();
+    await _refreshDownloadStorageState();
     await _restoreDownloadQueue();
     final Uri homeUri = appDestinations.first.uri;
     if (!mounted) {
@@ -318,41 +440,52 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         NavigationDelegate(
           onNavigationRequest: (NavigationRequest request) {
             final Uri? nextUri = Uri.tryParse(request.url);
+            final StandardPageLoadHandle<EasyCopyPage>? pendingLoad =
+                _pendingPageLoad;
+            final bool hasActivePendingLoad =
+                pendingLoad != null && !pendingLoad.completer.isCompleted;
             if (_isLoginUri(nextUri)) {
-              unawaited(_openAuthFlow());
+              if (hasActivePendingLoad) {
+                unawaited(_openAuthFlow());
+              }
               return NavigationDecision.prevent;
             }
             if (!AppConfig.isAllowedNavigationUri(nextUri)) {
-              _showSnackBar('已阻止跳转到站外页面');
+              if (hasActivePendingLoad) {
+                _showSnackBar('已阻止跳转到站外页面');
+              }
               return NavigationDecision.prevent;
             }
 
             final Uri rewrittenUri = AppConfig.rewriteToCurrentHost(
               nextUri ?? _currentUri,
             );
-            if (_shouldAcceptPendingNavigationUri(
-              rewrittenUri,
-              source: StandardPageLoadEventSource.navigationRequest,
-            )) {
-              _setPendingLocation(rewrittenUri);
+            final StandardPageLoadHandle<EasyCopyPage>? acceptedLoad =
+                acceptedPendingNavigationLoad(
+                  pendingLoad,
+                  rewrittenUri,
+                  source: StandardPageLoadEventSource.navigationRequest,
+                );
+            if (acceptedLoad == null) {
+              return NavigationDecision.prevent;
             }
+            _setPendingLocation(rewrittenUri, pendingLoad: acceptedLoad);
             return NavigationDecision.navigate;
           },
           onPageStarted: (String url) {
             final Uri startedUri = AppConfig.rewriteToCurrentHost(
               Uri.tryParse(url) ?? _currentUri,
             );
-            if (!_shouldAcceptPendingNavigationUri(
-              startedUri,
-              source: StandardPageLoadEventSource.pageStarted,
-            )) {
+            final StandardPageLoadHandle<EasyCopyPage>? pendingLoad =
+                acceptedPendingNavigationLoad(
+                  _pendingPageLoad,
+                  startedUri,
+                  source: StandardPageLoadEventSource.pageStarted,
+                );
+            if (pendingLoad == null) {
               return;
             }
-            _startLoading(
-              startedUri,
-              preserveCurrentPage:
-                  _pendingPageLoad?.preserveCurrentPage ?? false,
-            );
+            _startLoading(startedUri, pendingLoad: pendingLoad);
           },
           onPageFinished: (String url) async {
             final StandardPageLoadHandle<EasyCopyPage>? pendingLoad =
@@ -388,22 +521,30 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
             final Uri changedUri = AppConfig.rewriteToCurrentHost(
               Uri.tryParse(change.url!) ?? _currentUri,
             );
-            if (_shouldAcceptPendingNavigationUri(
-              changedUri,
-              source: StandardPageLoadEventSource.urlChange,
-            )) {
-              _setPendingLocation(changedUri);
+            final StandardPageLoadHandle<EasyCopyPage>? pendingLoad =
+                acceptedPendingNavigationLoad(
+                  _pendingPageLoad,
+                  changedUri,
+                  source: StandardPageLoadEventSource.urlChange,
+                );
+            if (pendingLoad != null) {
+              _setPendingLocation(changedUri, pendingLoad: pendingLoad);
             }
           },
           onWebResourceError: (WebResourceError error) {
             if (error.isForMainFrame == false) {
               return;
             }
+            final StandardPageLoadHandle<EasyCopyPage>? pendingLoad =
+                _pendingPageLoad;
+            if (pendingLoad == null || pendingLoad.completer.isCompleted) {
+              return;
+            }
             final Uri? failingUri = error.url == null
                 ? null
                 : Uri.tryParse(error.url!);
             if (failingUri != null &&
-                !_shouldAcceptPendingNavigationUri(
+                !pendingLoad.accepts(
                   AppConfig.rewriteToCurrentHost(failingUri),
                   source: StandardPageLoadEventSource.mainFrameError,
                 )) {
@@ -544,13 +685,22 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         .loadCachedLibrary();
     if (!mounted) {
       _cachedComics = comics;
-      _isLoadingCachedComics = false;
       return;
     }
     setState(() {
       _cachedComics = comics;
-      _isLoadingCachedComics = false;
     });
+  }
+
+  DownloadStorageState get _downloadStorageState =>
+      _downloadStorageStateNotifier.value;
+
+  Future<void> _refreshDownloadStorageState({
+    DownloadPreferences? preferences,
+  }) async {
+    final DownloadStorageState state = await _downloadService
+        .resolveStorageState(preferences: preferences);
+    _downloadStorageStateNotifier.value = state;
   }
 
   Future<ReaderPageData> _extractReaderPageForDownload(Uri uri) async {
@@ -777,35 +927,59 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     unawaited(_ensureDownloadQueueRunning());
   }
 
-  Future<void> _removeComicFromDownloadQueue(
-    String comicKey, {
-    required String comicTitle,
-    bool markFilesForDeletion = false,
-  }) async {
+  Future<List<DownloadQueueTask>> _removeComicFromDownloadQueue(
+    String comicKey,
+  ) async {
     final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
     if (snapshot.isEmpty) {
-      return;
+      return const <DownloadQueueTask>[];
     }
 
-    final bool containsComic = snapshot.tasks.any(
-      (DownloadQueueTask task) => task.comicKey == comicKey,
-    );
-    if (!containsComic) {
-      return;
+    final List<DownloadQueueTask> removedTasks = snapshot.tasks
+        .where((DownloadQueueTask task) => task.comicKey == comicKey)
+        .toList(growable: false);
+    if (removedTasks.isEmpty) {
+      return const <DownloadQueueTask>[];
     }
 
-    final bool removesActiveComic = snapshot.activeTask?.comicKey == comicKey;
+    final DownloadQueueTask? activeTask = snapshot.activeTask;
+    final bool removesActiveComic = activeTask?.comicKey == comicKey;
     final List<DownloadQueueTask> remainingTasks = snapshot.tasks
         .where((DownloadQueueTask task) => task.comicKey != comicKey)
         .toList(growable: false);
 
-    if (removesActiveComic) {
-      _cancelledComicKeys.add(comicKey);
-      if (markFilesForDeletion) {
-        _cancelledComicTitles[comicKey] = comicTitle;
-      }
+    if (removesActiveComic && activeTask != null) {
+      _pendingCancelledTaskCleanups[activeTask.id] = removedTasks;
     }
 
+    await _persistDownloadQueueSnapshot(
+      snapshot.copyWith(
+        isPaused: remainingTasks.isEmpty ? false : snapshot.isPaused,
+        tasks: remainingTasks,
+      ),
+    );
+    return removedTasks;
+  }
+
+  Future<void> _removeDownloadQueueTask(DownloadQueueTask task) async {
+    final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
+    if (snapshot.isEmpty) {
+      return;
+    }
+    final bool containsTask = snapshot.tasks.any(
+      (DownloadQueueTask item) => item.id == task.id,
+    );
+    if (!containsTask) {
+      return;
+    }
+
+    final bool removesActiveTask = snapshot.activeTask?.id == task.id;
+    final List<DownloadQueueTask> remainingTasks = snapshot.tasks
+        .where((DownloadQueueTask item) => item.id != task.id)
+        .toList(growable: false);
+    if (removesActiveTask) {
+      _pendingCancelledTaskCleanups[task.id] = <DownloadQueueTask>[task];
+    }
     await _persistDownloadQueueSnapshot(
       snapshot.copyWith(
         isPaused: remainingTasks.isEmpty ? false : snapshot.isPaused,
@@ -841,18 +1015,18 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     final String comicKey = item.comicHref.isEmpty
         ? item.comicTitle
         : _comicQueueKey(item.comicHref);
-    final bool removesActiveComic =
-        _downloadQueueSnapshot.activeTask?.comicKey == comicKey;
+    final DownloadQueueTask? activeTask = _downloadQueueSnapshot.activeTask;
+    final bool removesActiveComic = activeTask?.comicKey == comicKey;
 
-    await _removeComicFromDownloadQueue(
-      comicKey,
-      comicTitle: item.comicTitle,
-      markFilesForDeletion: removesActiveComic,
-    );
+    final List<DownloadQueueTask> removedTasks =
+        await _removeComicFromDownloadQueue(comicKey);
 
     if (!removesActiveComic) {
+      await _downloadService.cleanupIncompleteTasks(removedTasks);
       await _downloadService.deleteCachedComic(item);
       await _refreshCachedComics();
+    } else if (activeTask != null) {
+      _pendingCancelledComicDeletions[activeTask.id] = item.comicTitle;
     }
 
     _showSnackBar('已删除 ${item.comicTitle} 的缓存');
@@ -884,16 +1058,157 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
 
     final bool removesActiveComic =
         _downloadQueueSnapshot.activeTask?.comicKey == task.comicKey;
-    await _removeComicFromDownloadQueue(
-      task.comicKey,
-      comicTitle: task.comicTitle,
-      markFilesForDeletion: true,
-    );
+    final List<DownloadQueueTask> removedTasks =
+        await _removeComicFromDownloadQueue(task.comicKey);
     if (!removesActiveComic) {
-      await _downloadService.deleteComicCacheByTitle(task.comicTitle);
+      await _downloadService.cleanupIncompleteTasks(removedTasks);
       await _refreshCachedComics();
     }
     _showSnackBar('已移出 ${task.comicTitle} 的缓存任务');
+  }
+
+  Future<void> _confirmRemoveQueuedTask(DownloadQueueTask task) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('移出章节任务'),
+          content: Text('确认移出《${task.comicTitle}》的 ${task.chapterLabel} 吗？'),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('移出'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    final bool removesActiveTask =
+        _downloadQueueSnapshot.activeTask?.id == task.id;
+    await _removeDownloadQueueTask(task);
+    if (!removesActiveTask) {
+      await _downloadService.cleanupIncompleteTasks(<DownloadQueueTask>[task]);
+      await _refreshCachedComics();
+    }
+    _showSnackBar('已移出 ${task.chapterLabel}');
+  }
+
+  Future<void> _retryDownloadQueueTask(DownloadQueueTask task) async {
+    final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
+    final int index = snapshot.tasks.indexWhere(
+      (DownloadQueueTask item) => item.id == task.id,
+    );
+    if (index == -1) {
+      return;
+    }
+    final DateTime now = DateTime.now();
+    final List<DownloadQueueTask> tasks = snapshot.tasks.toList(growable: true);
+    tasks[index] = task.copyWith(
+      status: DownloadQueueTaskStatus.queued,
+      progressLabel: '等待缓存',
+      errorMessage: '',
+      updatedAt: now,
+    );
+    final bool shouldResume =
+        snapshot.isPaused &&
+        snapshot.activeTask?.id == task.id &&
+        task.status == DownloadQueueTaskStatus.failed;
+    await _persistDownloadQueueSnapshot(
+      snapshot.copyWith(
+        isPaused: shouldResume ? false : snapshot.isPaused,
+        tasks: tasks,
+      ),
+    );
+    _showSnackBar('已重新加入 ${task.chapterLabel}');
+    if (shouldResume || !snapshot.isPaused) {
+      unawaited(_ensureDownloadQueueRunning());
+    }
+  }
+
+  bool _canEditDownloadStorage() {
+    if (_downloadStorageBusyNotifier.value) {
+      return false;
+    }
+    if (_downloadQueueSnapshot.isNotEmpty && !_downloadQueueSnapshot.isPaused) {
+      _showSnackBar('请先暂停缓存队列后再切换缓存目录');
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _pickDownloadStorageDirectory() async {
+    if (!_downloadService.supportsCustomStorageSelection ||
+        !_canEditDownloadStorage()) {
+      return;
+    }
+    final DownloadStorageState currentState = _downloadStorageState;
+    final String? selectedPath = await getDirectoryPath(
+      confirmButtonText: '选择缓存目录',
+      initialDirectory: currentState.basePath.trim().isEmpty
+          ? null
+          : currentState.basePath,
+    );
+    if (selectedPath == null || selectedPath.trim().isEmpty || !mounted) {
+      return;
+    }
+    final DownloadPreferences nextPreferences = DownloadPreferences(
+      mode: DownloadStorageMode.customDirectory,
+      customBasePath: selectedPath.trim(),
+    );
+    await _applyDownloadStoragePreferences(
+      nextPreferences,
+      successMessage: '已切换到新的缓存目录',
+    );
+  }
+
+  Future<void> _resetDownloadStorageDirectory() async {
+    if (!_canEditDownloadStorage()) {
+      return;
+    }
+    await _applyDownloadStoragePreferences(
+      const DownloadPreferences(),
+      successMessage: '已恢复默认缓存目录',
+    );
+  }
+
+  Future<void> _applyDownloadStoragePreferences(
+    DownloadPreferences nextPreferences, {
+    required String successMessage,
+  }) async {
+    final DownloadPreferences currentPreferences =
+        _preferencesController.downloadPreferences;
+    if (currentPreferences.mode == nextPreferences.mode &&
+        currentPreferences.customBasePath == nextPreferences.customBasePath) {
+      return;
+    }
+
+    _downloadStorageBusyNotifier.value = true;
+    try {
+      final DownloadStorageMigrationResult result = await _downloadService
+          .migrateCacheRoot(from: currentPreferences, to: nextPreferences);
+      await _preferencesController.updateDownloadPreferences(
+        (_) => nextPreferences,
+      );
+      _downloadStorageStateNotifier.value = result.storageState;
+      await _refreshCachedComics();
+      final String message = result.cleanupWarning.isEmpty
+          ? successMessage
+          : '$successMessage，${result.cleanupWarning}';
+      _showSnackBar(message);
+    } catch (error) {
+      await _refreshDownloadStorageState();
+      _showSnackBar(_formatDownloadError(error));
+    } finally {
+      _downloadStorageBusyNotifier.value = false;
+    }
   }
 
   bool _shouldPauseActiveDownload(DownloadQueueTask task) {
@@ -902,8 +1217,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }
 
   bool _shouldCancelActiveDownload(DownloadQueueTask task) {
-    return _cancelledComicKeys.contains(task.comicKey) ||
-        _downloadQueueTaskById(task.id) == null;
+    return _downloadQueueTaskById(task.id) == null;
   }
 
   Future<void> _ensureDownloadQueueRunning() async {
@@ -911,6 +1225,23 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         _downloadQueueSnapshot.isPaused ||
         _downloadQueueSnapshot.isEmpty ||
         !mounted) {
+      return;
+    }
+
+    final DownloadStorageState storageState = await _downloadService
+        .resolveStorageState();
+    _downloadStorageStateNotifier.value = storageState;
+    if (!storageState.isReady) {
+      await _persistDownloadQueueSnapshot(
+        _downloadQueueSnapshot.copyWith(isPaused: true),
+      );
+      if (mounted) {
+        _showSnackBar(
+          storageState.errorMessage.isEmpty
+              ? '缓存目录不可用，请检查下载管理页中的目录设置。'
+              : '缓存目录不可用：${storageState.errorMessage}',
+        );
+      }
       return;
     }
 
@@ -1024,10 +1355,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         );
       }
     } on DownloadCancelledException {
-      final String comicTitle =
-          _cancelledComicTitles.remove(task.comicKey) ?? task.comicTitle;
-      _cancelledComicKeys.remove(task.comicKey);
-      await _downloadService.deleteComicCacheByTitle(comicTitle);
+      final List<DownloadQueueTask> tasksToCleanup =
+          _pendingCancelledTaskCleanups.remove(task.id) ??
+          <DownloadQueueTask>[task];
+      final String? comicDeletionTitle = _pendingCancelledComicDeletions.remove(
+        task.id,
+      );
+      if (comicDeletionTitle != null) {
+        await _downloadService.deleteComicCacheByTitle(comicDeletionTitle);
+      } else {
+        await _downloadService.cleanupIncompleteTasks(tasksToCleanup);
+      }
       await _refreshCachedComics();
     } catch (error) {
       final DownloadQueueTask? latestTask = _downloadQueueTaskById(task.id);
@@ -1068,33 +1406,27 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     };
   }
 
-  bool _shouldAcceptPendingNavigationUri(
+  void _setPendingLocation(
     Uri uri, {
-    required StandardPageLoadEventSource source,
+    required StandardPageLoadHandle<EasyCopyPage> pendingLoad,
   }) {
-    final StandardPageLoadHandle<EasyCopyPage>? pendingLoad = _pendingPageLoad;
-    if (pendingLoad == null || pendingLoad.completer.isCompleted) {
-      return true;
-    }
-    return pendingLoad.accepts(uri, source: source);
-  }
-
-  void _setPendingLocation(Uri uri) {
     final Uri rewrittenUri = AppConfig.rewriteToCurrentHost(uri);
-    final int tabIndex =
-        _pendingPageLoad?.targetTabIndex ?? tabIndexForUri(rewrittenUri);
+    final int tabIndex = pendingLoad.targetTabIndex;
     _mutateSessionState(() {
       _tabSessionStore.replaceCurrent(tabIndex, rewrittenUri);
     }, syncSearch: tabIndex == _selectedIndex);
   }
 
-  void _startLoading(Uri uri, {required bool preserveCurrentPage}) {
-    if (!preserveCurrentPage) {
+  void _startLoading(
+    Uri uri, {
+    required StandardPageLoadHandle<EasyCopyPage> pendingLoad,
+  }) {
+    final Uri rewrittenUri = AppConfig.rewriteToCurrentHost(uri);
+    final int tabIndex = pendingLoad.targetTabIndex;
+    final bool preserveCurrentPage = pendingLoad.preserveCurrentPage;
+    if (!preserveCurrentPage && tabIndex == _selectedIndex) {
       _resetStandardScrollPosition();
     }
-    final Uri rewrittenUri = AppConfig.rewriteToCurrentHost(uri);
-    final int tabIndex =
-        _pendingPageLoad?.targetTabIndex ?? tabIndexForUri(rewrittenUri);
     final EasyCopyPage? visiblePage = preserveCurrentPage
         ? _tabSessionStore.currentEntry(tabIndex).page
         : null;
@@ -1164,9 +1496,15 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     });
     if (preserveVisiblePage &&
         preservedPage != null &&
-        preservedPage is! ReaderPageData) {
+        preservedPage is! ReaderPageData &&
+        tabIndex == _selectedIndex) {
+      final PrimaryTabRouteEntry entry = _tabSessionStore.currentEntry(
+        tabIndex,
+      );
       _restoreStandardScrollPosition(
-        _tabSessionStore.currentEntry(tabIndex).standardScrollOffset,
+        entry.standardScrollOffset,
+        tabIndex: tabIndex,
+        routeKey: entry.routeKey,
       );
     }
     return tabIndex;
@@ -1281,8 +1619,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       _handleReaderPageLoaded(page, previousUri: previousReaderUri);
       return;
     }
+    final PrimaryTabRouteEntry entry = _tabSessionStore.currentEntry(tabIndex);
     _restoreStandardScrollPosition(
-      _tabSessionStore.currentEntry(tabIndex).standardScrollOffset,
+      entry.standardScrollOffset,
+      tabIndex: tabIndex,
+      routeKey: entry.routeKey,
     );
   }
 
@@ -1319,13 +1660,16 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     Uri uri, {
     bool bypassCache = false,
     bool preserveVisiblePage = false,
+    bool skipPersistVisiblePageState = false,
     NavigationIntent historyMode = NavigationIntent.push,
     int? sourceTabIndex,
     int? targetTabIndexOverride,
     _CachedChapterNavigationContext cachedChapterContext =
         const _CachedChapterNavigationContext(),
   }) async {
-    _persistVisiblePageState();
+    if (!skipPersistVisiblePageState) {
+      _persistVisiblePageState();
+    }
     await _hostManager.ensureInitialized();
     final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
     final int resolvedTargetTabIndex =
@@ -1338,7 +1682,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         _page != null &&
         _currentEntry.routeKey == key.routeKey &&
         _isPrimaryTabContent) {
-      _restoreStandardScrollPosition(_currentEntry.standardScrollOffset);
+      _restoreStandardScrollPosition(
+        _currentEntry.standardScrollOffset,
+        tabIndex: _selectedIndex,
+        routeKey: _currentEntry.routeKey,
+      );
       return;
     }
     if (!preserveVisiblePage) {
@@ -1787,6 +2135,121 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     );
   }
 
+  Future<DetailPageData?> _refreshDetailPageForCollection(
+    DetailPageData page, {
+    required int sourceTabIndex,
+    required bool preserveVisiblePage,
+  }) async {
+    await _loadUri(
+      Uri.parse(page.uri),
+      bypassCache: true,
+      preserveVisiblePage: preserveVisiblePage,
+      sourceTabIndex: sourceTabIndex,
+      targetTabIndexOverride: sourceTabIndex,
+      historyMode: NavigationIntent.preserve,
+    );
+    final EasyCopyPage? refreshedPage = _page;
+    if (refreshedPage is! DetailPageData || refreshedPage.uri != page.uri) {
+      return null;
+    }
+    return refreshedPage;
+  }
+
+  Future<DetailPageData?> _ensureDetailPageReadyForCollection(
+    DetailPageData page, {
+    required int sourceTabIndex,
+  }) async {
+    DetailPageData workingPage = page;
+    if (!_session.isAuthenticated) {
+      await _openAuthFlow();
+      if (!_session.isAuthenticated || !mounted) {
+        return null;
+      }
+      final DetailPageData? refreshedPage =
+          await _refreshDetailPageForCollection(
+            page,
+            sourceTabIndex: sourceTabIndex,
+            preserveVisiblePage: false,
+          );
+      if (refreshedPage == null) {
+        return null;
+      }
+      workingPage = refreshedPage;
+    }
+
+    if (workingPage.comicId.trim().isNotEmpty) {
+      return workingPage;
+    }
+
+    final DetailPageData? refreshedPage = await _refreshDetailPageForCollection(
+      workingPage,
+      sourceTabIndex: sourceTabIndex,
+      preserveVisiblePage: true,
+    );
+    if (refreshedPage == null || refreshedPage.comicId.trim().isEmpty) {
+      return null;
+    }
+    return refreshedPage;
+  }
+
+  Future<void> _toggleDetailCollection(DetailPageData page) async {
+    if (_isUpdatingCollection) {
+      return;
+    }
+
+    final int sourceTabIndex = _selectedIndex;
+    final DetailPageData? detailPage =
+        await _ensureDetailPageReadyForCollection(
+          page,
+          sourceTabIndex: sourceTabIndex,
+        );
+    if (detailPage == null) {
+      if (mounted && _session.isAuthenticated) {
+        _showSnackBar('收藏信息未准备好，请刷新详情页后重试。');
+      }
+      return;
+    }
+
+    final bool nextCollected = !detailPage.isCollected;
+    _mutateSessionState(() {
+      _isUpdatingCollection = true;
+    }, syncSearch: false);
+    try {
+      await _siteApiClient.setComicCollection(
+        comicId: detailPage.comicId,
+        isCollected: nextCollected,
+      );
+      final DetailPageData updatedPage = detailPage.copyWith(
+        isCollected: nextCollected,
+      );
+      _mutateSessionState(() {
+        _tabSessionStore.updatePage(sourceTabIndex, updatedPage);
+      }, syncSearch: sourceTabIndex == _selectedIndex);
+      await _pageRepository.removeAuthScope(_session.authScope);
+      if (mounted) {
+        _showSnackBar(nextCollected ? '已加入书架' : '已取消收藏');
+      }
+    } catch (error) {
+      final String message = error.toString();
+      if (message.contains('登录已失效')) {
+        await _logout(showFeedback: false);
+        if (mounted) {
+          _showSnackBar('登录已失效，请重新登录。');
+        }
+      } else if (mounted) {
+        _showSnackBar(message.isEmpty ? '收藏操作失败，请稍后重试。' : message);
+      }
+    } finally {
+      if (mounted) {
+        _mutateSessionState(() {
+          _isUpdatingCollection = false;
+        }, syncSearch: false);
+      } else {
+        _isUpdatingCollection = false;
+      }
+    }
+  }
+
   Future<void> _openAuthFlow() async {
     await _hostManager.ensureInitialized();
     if (!mounted) {
@@ -1960,7 +2423,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
 
   Uri _targetUriForPrimaryTab(int index, {bool resetToRoot = false}) {
     if (resetToRoot) {
-      return _tabSessionStore.resetToRoot(index).uri;
+      return appDestinations[index].uri;
     }
     return _tabSessionStore.currentEntry(index).uri;
   }
@@ -1990,6 +2453,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     await _loadUri(
       targetUri,
       preserveVisiblePage: !shouldResetToRoot,
+      // Restoring a tab should keep the tab's own stack ownership even when
+      // the visible route is a shared detail or reader URI like `/comic/...`.
+      targetTabIndexOverride: index,
       historyMode: shouldResetToRoot
           ? NavigationIntent.resetToRoot
           : NavigationIntent.preserve,
@@ -2019,6 +2485,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       await _loadUri(
         previousEntry.uri,
         preserveVisiblePage: _page != null,
+        skipPersistVisiblePageState: true,
         sourceTabIndex: _selectedIndex,
         historyMode: NavigationIntent.preserve,
       );
@@ -2075,6 +2542,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       await _loadUri(
         existingCatalogEntry.uri,
         preserveVisiblePage: existingCatalogEntry.page != null,
+        skipPersistVisiblePageState: true,
         sourceTabIndex: _selectedIndex,
         historyMode: NavigationIntent.preserve,
       );
@@ -2197,6 +2665,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     ReaderPageData page, {
     required bool resetControllers,
   }) async {
+    final DeferredViewportTicket ticket = _readerRestoreCoordinator
+        .beginRequest();
     final String progressKey = _readerProgressKeyForPage(page);
     final ReaderPosition? savedPosition = await _readerProgressStore
         .readPosition(progressKey);
@@ -2224,8 +2694,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         setState(() {});
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _jumpReaderToPage(pageIndex, attempts: 10);
-        _jumpReaderPageOffset(pageIndex, offset: pageOffset, attempts: 10);
+        if (!_isActiveReaderRestore(ticket, pageUri: page.uri, isPaged: true)) {
+          return;
+        }
+        _jumpReaderToPage(page.uri, pageIndex, attempts: 10, ticket: ticket);
+        _jumpReaderPageOffset(
+          page.uri,
+          pageIndex,
+          offset: pageOffset,
+          attempts: 10,
+          ticket: ticket,
+        );
       });
       return;
     }
@@ -2235,17 +2714,33 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         : null;
     _lastPersistedReaderPosition = savedPosition;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _jumpReaderToOffset(savedOffset, attempts: 10);
+      if (!_isActiveReaderRestore(ticket, pageUri: page.uri, isPaged: false)) {
+        return;
+      }
+      _jumpReaderToOffset(page.uri, savedOffset, attempts: 10, ticket: ticket);
       _scheduleVisibleReaderImageIndexUpdate();
     });
   }
 
-  void _jumpReaderToOffset(double? offset, {required int attempts}) {
+  void _jumpReaderToOffset(
+    String pageUri,
+    double? offset, {
+    required int attempts,
+    required DeferredViewportTicket ticket,
+  }) {
+    if (!_isActiveReaderRestore(ticket, pageUri: pageUri, isPaged: false)) {
+      return;
+    }
     if (!_readerScrollController.hasClients) {
       if (attempts > 0) {
         Future<void>.delayed(
           const Duration(milliseconds: 250),
-          () => _jumpReaderToOffset(offset, attempts: attempts - 1),
+          () => _jumpReaderToOffset(
+            pageUri,
+            offset,
+            attempts: attempts - 1,
+            ticket: ticket,
+          ),
         );
       }
       return;
@@ -2260,7 +2755,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (targetOffset > maxExtent && attempts > 0) {
       Future<void>.delayed(
         const Duration(milliseconds: 250),
-        () => _jumpReaderToOffset(targetOffset, attempts: attempts - 1),
+        () => _jumpReaderToOffset(
+          pageUri,
+          targetOffset,
+          attempts: attempts - 1,
+          ticket: ticket,
+        ),
       );
       return;
     }
@@ -2268,12 +2768,25 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     _readerScrollController.jumpTo(clampedOffset);
   }
 
-  void _jumpReaderToPage(int pageIndex, {required int attempts}) {
+  void _jumpReaderToPage(
+    String pageUri,
+    int pageIndex, {
+    required int attempts,
+    required DeferredViewportTicket ticket,
+  }) {
+    if (!_isActiveReaderRestore(ticket, pageUri: pageUri, isPaged: true)) {
+      return;
+    }
     if (!_readerPageController.hasClients) {
       if (attempts > 0) {
         Future<void>.delayed(
           const Duration(milliseconds: 250),
-          () => _jumpReaderToPage(pageIndex, attempts: attempts - 1),
+          () => _jumpReaderToPage(
+            pageUri,
+            pageIndex,
+            attempts: attempts - 1,
+            ticket: ticket,
+          ),
         );
       }
       return;
@@ -2282,10 +2795,15 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }
 
   void _jumpReaderPageOffset(
+    String pageUri,
     int pageIndex, {
     required double? offset,
     required int attempts,
+    required DeferredViewportTicket ticket,
   }) {
+    if (!_isActiveReaderRestore(ticket, pageUri: pageUri, isPaged: true)) {
+      return;
+    }
     final ScrollController? controller =
         _readerPageScrollControllers[pageIndex];
     if (controller == null || !controller.hasClients) {
@@ -2293,9 +2811,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         Future<void>.delayed(
           const Duration(milliseconds: 250),
           () => _jumpReaderPageOffset(
+            pageUri,
             pageIndex,
             offset: offset,
             attempts: attempts - 1,
+            ticket: ticket,
           ),
         );
       }
@@ -2449,47 +2969,81 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }
 
   void _resetStandardScrollPosition() {
+    final DeferredViewportTicket ticket = _standardScrollRestoreCoordinator
+        .beginRequest();
     _suspendStandardScrollTracking = true;
     if (_standardScrollController.hasClients) {
       _standardScrollController.jumpTo(0);
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_standardScrollRestoreCoordinator.isActive(ticket)) {
+        _finishStandardScrollRestore(ticket);
+        return;
+      }
       if (!mounted) {
-        _suspendStandardScrollTracking = false;
+        _finishStandardScrollRestore(ticket);
         return;
       }
       if (!_standardScrollController.hasClients) {
-        _suspendStandardScrollTracking = false;
+        _finishStandardScrollRestore(ticket);
         return;
       }
       if (_standardScrollController.offset != 0) {
         _standardScrollController.jumpTo(0);
       }
-      _suspendStandardScrollTracking = false;
+      _finishStandardScrollRestore(ticket);
     });
   }
 
-  void _restoreStandardScrollPosition(double offset) {
+  void _restoreStandardScrollPosition(
+    double offset, {
+    required int tabIndex,
+    required String routeKey,
+  }) {
+    final DeferredViewportTicket ticket = _standardScrollRestoreCoordinator
+        .beginRequest();
     _suspendStandardScrollTracking = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _jumpStandardToOffset(offset, attempts: 10);
+      _jumpStandardToOffset(
+        offset,
+        tabIndex: tabIndex,
+        routeKey: routeKey,
+        attempts: 10,
+        ticket: ticket,
+      );
     });
   }
 
-  void _jumpStandardToOffset(double offset, {required int attempts}) {
-    if (!mounted) {
-      _suspendStandardScrollTracking = false;
+  void _jumpStandardToOffset(
+    double offset, {
+    required int tabIndex,
+    required String routeKey,
+    required int attempts,
+    required DeferredViewportTicket ticket,
+  }) {
+    if (!_isActiveStandardScrollRestore(
+      ticket,
+      tabIndex: tabIndex,
+      routeKey: routeKey,
+    )) {
+      _finishStandardScrollRestore(ticket);
       return;
     }
     if (!_standardScrollController.hasClients) {
       if (attempts > 0) {
         Future<void>.delayed(
           const Duration(milliseconds: 120),
-          () => _jumpStandardToOffset(offset, attempts: attempts - 1),
+          () => _jumpStandardToOffset(
+            offset,
+            tabIndex: tabIndex,
+            routeKey: routeKey,
+            attempts: attempts - 1,
+            ticket: ticket,
+          ),
         );
         return;
       }
-      _suspendStandardScrollTracking = false;
+      _finishStandardScrollRestore(ticket);
       return;
     }
 
@@ -2498,24 +3052,27 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if ((offset - clampedOffset).abs() > 1 && attempts > 0) {
       Future<void>.delayed(
         const Duration(milliseconds: 120),
-        () => _jumpStandardToOffset(offset, attempts: attempts - 1),
+        () => _jumpStandardToOffset(
+          offset,
+          tabIndex: tabIndex,
+          routeKey: routeKey,
+          attempts: attempts - 1,
+          ticket: ticket,
+        ),
       );
       return;
     }
 
     _standardScrollController.jumpTo(clampedOffset);
-    _suspendStandardScrollTracking = false;
-    _tabSessionStore.updateScroll(
-      _selectedIndex,
-      _currentEntry.routeKey,
-      clampedOffset,
-    );
+    _finishStandardScrollRestore(ticket);
+    _tabSessionStore.updateScroll(tabIndex, routeKey, clampedOffset);
   }
 
   Future<void> _scrollCurrentStandardPageToTop() async {
     if (!_standardScrollController.hasClients) {
       return;
     }
+    _noteStandardViewportUserInteraction();
     await _standardScrollController.animateTo(
       0,
       duration: const Duration(milliseconds: 180),
@@ -2531,8 +3088,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (page is DetailPageData) {
       return true;
     }
-    final String path = _currentUri.path.toLowerCase();
-    return path.startsWith('/comic/') && !path.startsWith('/comic/chapter');
+    return _isDetailCatalogUri(_currentUri);
   }
 
   bool get _shouldShowSearchBar {
@@ -2589,6 +3145,15 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
 
   bool _isProfileUri(Uri uri) {
     return uri.path.startsWith('/person/home');
+  }
+
+  bool _isDetailCatalogUri(Uri uri) {
+    final String path = uri.path.toLowerCase();
+    return path.startsWith('/comic/') && !path.contains('/chapter/');
+  }
+
+  bool _isUserScopedDetailUri(Uri uri) {
+    return _session.isAuthenticated && _isDetailCatalogUri(uri);
   }
 
   Uri get _visiblePageUriForTransition {

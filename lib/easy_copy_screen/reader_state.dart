@@ -14,6 +14,7 @@ extension _EasyCopyScreenReaderState on _EasyCopyScreenState {
   }
 
   Future<void> _stepReaderForward() async {
+    _readerRestoreCoordinator.noteUserInteraction();
     if (_readerPreferences.isPaged) {
       final EasyCopyPage? page = _page;
       if (page is! ReaderPageData) {
@@ -47,6 +48,7 @@ extension _EasyCopyScreenReaderState on _EasyCopyScreenState {
   }
 
   Future<void> _stepReaderBackward() async {
+    _readerRestoreCoordinator.noteUserInteraction();
     if (_readerPreferences.isPaged) {
       final int previousPageIndex = _currentReaderPageIndex - 1;
       if (previousPageIndex < 0) {

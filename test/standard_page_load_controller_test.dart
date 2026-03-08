@@ -238,4 +238,56 @@ void main() {
       isTrue,
     );
   });
+
+  test('acceptedPendingNavigationLoad ignores missing and completed loads', () {
+    expect(
+      acceptedPendingNavigationLoad<String>(
+        null,
+        Uri.parse('https://www.2026copy.com/comics'),
+        source: StandardPageLoadEventSource.navigationRequest,
+      ),
+      isNull,
+    );
+
+    final StandardPageLoadHandle<String> completedLoad = buildHandle(
+      'https://www.2026copy.com/comics',
+      loadId: 7,
+    );
+    completedLoad.completer.complete('done');
+
+    expect(
+      acceptedPendingNavigationLoad(
+        completedLoad,
+        Uri.parse('https://www.2026copy.com/comics'),
+        source: StandardPageLoadEventSource.navigationRequest,
+      ),
+      isNull,
+    );
+  });
+
+  test('acceptedPendingNavigationLoad returns the active accepted handle', () {
+    final StandardPageLoadHandle<String> load = buildHandle(
+      'https://www.2026copy.com/comic/demo',
+      loadId: 8,
+      targetTabIndex: 2,
+    );
+    final Uri requestedUri = Uri.parse('https://www.2026copy.com/comic/demo');
+
+    final StandardPageLoadHandle<String>? acceptedLoad =
+        acceptedPendingNavigationLoad(
+          load,
+          requestedUri,
+          source: StandardPageLoadEventSource.navigationRequest,
+        );
+
+    expect(acceptedLoad, same(load));
+    expect(
+      acceptedPendingNavigationLoad(
+        load,
+        Uri.parse('https://www.2026copy.com/person/home'),
+        source: StandardPageLoadEventSource.urlChange,
+      ),
+      isNull,
+    );
+  });
 }

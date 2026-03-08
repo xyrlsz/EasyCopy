@@ -50,6 +50,10 @@ void main() {
         useVolumeKeysForPaging: true,
         fullscreen: false,
       ),
+      downloadPreferences: DownloadPreferences(
+        mode: DownloadStorageMode.customDirectory,
+        customBasePath: 'D:\\Comics',
+      ),
     );
 
     await store.write(original);
@@ -69,5 +73,10 @@ void main() {
     expect(restored.readerPreferences.keepScreenOn, isTrue);
     expect(restored.readerPreferences.useVolumeKeysForPaging, isTrue);
     expect(restored.readerPreferences.fullscreen, isFalse);
+    expect(
+      restored.downloadPreferences.mode,
+      DownloadStorageMode.customDirectory,
+    );
+    expect(restored.downloadPreferences.customBasePath, 'D:\\Comics');
   });
 }

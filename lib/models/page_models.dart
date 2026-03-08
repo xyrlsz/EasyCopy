@@ -92,11 +92,7 @@ class LinkAction {
   bool get isNavigable => href.isNotEmpty;
 
   Map<String, Object?> toJson() {
-    return <String, Object?>{
-      'label': label,
-      'href': href,
-      'active': active,
-    };
+    return <String, Object?>{'label': label, 'href': href, 'active': active};
   }
 }
 
@@ -653,9 +649,7 @@ class RankPageData extends EasyCopyPage {
       'type': 'rank',
       'title': title,
       'uri': uri,
-      'categories': categories
-          .map((LinkAction item) => item.toJson())
-          .toList(),
+      'categories': categories.map((LinkAction item) => item.toJson()).toList(),
       'periods': periods.map((LinkAction item) => item.toJson()).toList(),
       'items': items.map((RankEntryData item) => item.toJson()).toList(),
     };
@@ -677,6 +671,8 @@ class DetailPageData extends EasyCopyPage {
     required this.startReadingHref,
     required this.chapterGroups,
     required this.chapters,
+    this.comicId = '',
+    this.isCollected = false,
   }) : super(type: EasyCopyPageType.detail);
 
   factory DetailPageData.fromJson(Map<String, Object?> json) {
@@ -698,6 +694,8 @@ class DetailPageData extends EasyCopyPage {
         ChapterGroupData.fromJson,
       ),
       chapters: _readList<ChapterData>(json, 'chapters', ChapterData.fromJson),
+      comicId: _stringValue(json['comicId']),
+      isCollected: _boolValue(json['isCollected']),
     );
   }
 
@@ -712,6 +710,44 @@ class DetailPageData extends EasyCopyPage {
   final String startReadingHref;
   final List<ChapterGroupData> chapterGroups;
   final List<ChapterData> chapters;
+  final String comicId;
+  final bool isCollected;
+
+  DetailPageData copyWith({
+    String? title,
+    String? uri,
+    String? coverUrl,
+    String? aliases,
+    String? authors,
+    String? heat,
+    String? updatedAt,
+    String? status,
+    String? summary,
+    List<LinkAction>? tags,
+    String? startReadingHref,
+    List<ChapterGroupData>? chapterGroups,
+    List<ChapterData>? chapters,
+    String? comicId,
+    bool? isCollected,
+  }) {
+    return DetailPageData(
+      title: title ?? this.title,
+      uri: uri ?? this.uri,
+      coverUrl: coverUrl ?? this.coverUrl,
+      aliases: aliases ?? this.aliases,
+      authors: authors ?? this.authors,
+      heat: heat ?? this.heat,
+      updatedAt: updatedAt ?? this.updatedAt,
+      status: status ?? this.status,
+      summary: summary ?? this.summary,
+      tags: tags ?? this.tags,
+      startReadingHref: startReadingHref ?? this.startReadingHref,
+      chapterGroups: chapterGroups ?? this.chapterGroups,
+      chapters: chapters ?? this.chapters,
+      comicId: comicId ?? this.comicId,
+      isCollected: isCollected ?? this.isCollected,
+    );
+  }
 
   @override
   Map<String, Object?> toJson() {
@@ -734,6 +770,8 @@ class DetailPageData extends EasyCopyPage {
       'chapters': chapters
           .map((ChapterData chapter) => chapter.toJson())
           .toList(),
+      'comicId': comicId,
+      'isCollected': isCollected,
     };
   }
 }

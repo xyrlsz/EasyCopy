@@ -25,6 +25,9 @@ class AppPreferencesController extends ChangeNotifier {
 
   ReaderPreferences get readerPreferences => _preferences.readerPreferences;
 
+  DownloadPreferences get downloadPreferences =>
+      _preferences.downloadPreferences;
+
   Future<void> ensureInitialized() {
     return _initialization ??= _initialize();
   }
@@ -41,6 +44,16 @@ class AppPreferencesController extends ChangeNotifier {
     return _replacePreferences(
       _preferences.copyWith(
         readerPreferences: transform(_preferences.readerPreferences),
+      ),
+    );
+  }
+
+  Future<void> updateDownloadPreferences(
+    DownloadPreferences Function(DownloadPreferences current) transform,
+  ) {
+    return _replacePreferences(
+      _preferences.copyWith(
+        downloadPreferences: transform(_preferences.downloadPreferences),
       ),
     );
   }

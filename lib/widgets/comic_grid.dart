@@ -7,12 +7,14 @@ class ComicGrid extends StatelessWidget {
   const ComicGrid({
     required this.items,
     required this.onTap,
+    this.onLongPress,
     this.emptyMessage = '暫時沒有可展示的內容。',
     super.key,
   });
 
   final List<ComicCardData> items;
   final ValueChanged<String> onTap;
+  final ValueChanged<String>? onLongPress;
   final String emptyMessage;
 
   @override
@@ -33,23 +35,31 @@ class ComicGrid extends StatelessWidget {
       ),
       itemBuilder: (BuildContext context, int index) {
         final ComicCardData item = items[index];
-        return _ComicCard(item: item, onTap: () => onTap(item.href));
+        return _ComicCard(
+          item: item,
+          onTap: () => onTap(item.href),
+          onLongPress: onLongPress == null
+              ? null
+              : () => onLongPress!(item.href),
+        );
       },
     );
   }
 }
 
 class _ComicCard extends StatelessWidget {
-  const _ComicCard({required this.item, required this.onTap});
+  const _ComicCard({required this.item, required this.onTap, this.onLongPress});
 
   final ComicCardData item;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(20),
       child: LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {

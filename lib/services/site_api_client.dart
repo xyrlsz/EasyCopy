@@ -114,6 +114,52 @@ class SiteApiClient {
     );
   }
 
+  Future<void> setComicCollection({
+    required String comicId,
+    required bool isCollected,
+  }) async {
+    await _session.ensureInitialized();
+    if (!_session.isAuthenticated || (_session.token ?? '').isEmpty) {
+      throw SiteApiException('请先登录后再操作收藏。');
+    }
+
+    final String normalizedComicId = comicId.trim();
+    if (normalizedComicId.isEmpty) {
+      throw SiteApiException('漫画收藏信息缺失，请刷新详情页后重试。');
+    }
+
+    final http.Response response = await _client.post(
+      AppConfig.resolvePath('/api/v2/web/collect'),
+      headers: <String, String>{
+        'Authorization': 'Token ${_session.token}',
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': AppConfig.desktopUserAgent,
+        'platform': '2',
+        if (_session.cookieHeader.isNotEmpty) 'Cookie': _session.cookieHeader,
+      },
+      body: <String, String>{
+        'comic_id': normalizedComicId,
+        'is_collect': isCollected ? '1' : '0',
+      },
+    );
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      throw SiteApiException('登录已失效，请重新登录。');
+    }
+
+    final Object? decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    if (decoded is! Map) {
+      throw SiteApiException('收藏接口返回格式异常。');
+    }
+    final Map<String, Object?> payload = decoded.map(
+      (Object? key, Object? value) => MapEntry(key.toString(), value),
+    );
+    final int code = (payload['code'] as num?)?.toInt() ?? response.statusCode;
+    if (code != 200) {
+      throw SiteApiException((payload['message'] as String?) ?? '收藏失败：$code');
+    }
+  }
+
   Future<DiscoverPageData> loadSearchResults({
     required String query,
     int page = 1,
@@ -221,15 +267,16 @@ class SiteApiClient {
   }) async {
     await _session.ensureInitialized();
     final int offset = (page - 1) * _searchPageSize;
-    final Uri uri = AppConfig.resolvePath('/api/kb/web/searchcd/comics').replace(
-      queryParameters: <String, String>{
-        'offset': '$offset',
-        'platform': '2',
-        'limit': '$_searchPageSize',
-        'q': query,
-        'q_type': qType,
-      },
-    );
+    final Uri uri = AppConfig.resolvePath('/api/kb/web/searchcd/comics')
+        .replace(
+          queryParameters: <String, String>{
+            'offset': '$offset',
+            'platform': '2',
+            'limit': '$_searchPageSize',
+            'q': query,
+            'q_type': qType,
+          },
+        );
     final http.Response response = await _client.get(
       uri,
       headers: <String, String>{
@@ -464,12 +511,13 @@ class SiteApiClient {
   }
 
   ComicCardData _parseSearchComic(Map<String, Object?> item) {
-    final Map<String, Object?> source = _firstNonEmptyMap(item, <String>[
-      'comic',
-      'comic_info',
-      'cartoon',
-      'results',
-    ]).isNotEmpty
+    final Map<String, Object?> source =
+        _firstNonEmptyMap(item, <String>[
+          'comic',
+          'comic_info',
+          'cartoon',
+          'results',
+        ]).isNotEmpty
         ? _firstNonEmptyMap(item, <String>[
             'comic',
             'comic_info',
@@ -491,11 +539,7 @@ class SiteApiClient {
         'status',
         'brief',
       ]),
-      coverUrl: _pickString(source, <String>[
-        'cover',
-        'cover_url',
-        'image',
-      ]),
+      coverUrl: _pickString(source, <String>['cover', 'cover_url', 'image']),
       href: _buildComicHref(pathWord, source, item),
     );
   }

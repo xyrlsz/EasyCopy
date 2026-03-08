@@ -509,30 +509,33 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
     final double topPadding = _readerPreferences.fullscreen && showGap ? 0 : 8;
     return RefreshIndicator(
       onRefresh: _retryCurrentPage,
-      child: ListView.builder(
-        key: ValueKey<String>(
-          'reader-scroll-${page.uri}-${_readerPreferences.pageFit.name}-$showGap',
+      child: NotificationListener<ScrollNotification>(
+        onNotification: _handleReaderScrollNotification,
+        child: ListView.builder(
+          key: ValueKey<String>(
+            'reader-scroll-${page.uri}-${_readerPreferences.pageFit.name}-$showGap',
+          ),
+          controller: _readerScrollController,
+          physics: const AlwaysScrollableScrollPhysics(
+            parent: BouncingScrollPhysics(),
+          ),
+          padding: EdgeInsets.only(top: topPadding, bottom: 16),
+          itemCount: page.imageUrls.length,
+          itemBuilder: (BuildContext context, int index) {
+            return Padding(
+              key: _readerImageItemKeyFor(index),
+              padding: EdgeInsets.only(bottom: showGap ? 10 : 0),
+              child: _buildReaderImageFrame(
+                context,
+                imageUrl: page.imageUrls[index],
+                viewportHeight:
+                    _readerPreferences.pageFit == ReaderPageFit.fitScreen
+                    ? MediaQuery.sizeOf(context).height * 0.72
+                    : null,
+              ),
+            );
+          },
         ),
-        controller: _readerScrollController,
-        physics: const AlwaysScrollableScrollPhysics(
-          parent: BouncingScrollPhysics(),
-        ),
-        padding: EdgeInsets.only(top: topPadding, bottom: 16),
-        itemCount: page.imageUrls.length,
-        itemBuilder: (BuildContext context, int index) {
-          return Padding(
-            key: _readerImageItemKeyFor(index),
-            padding: EdgeInsets.only(bottom: showGap ? 10 : 0),
-            child: _buildReaderImageFrame(
-              context,
-              imageUrl: page.imageUrls[index],
-              viewportHeight:
-                  _readerPreferences.pageFit == ReaderPageFit.fitScreen
-                  ? MediaQuery.sizeOf(context).height * 0.72
-                  : null,
-            ),
-          );
-        },
       ),
     );
   }
@@ -543,42 +546,51 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
         ReaderReadingDirection.rightToLeft;
     final double topPadding =
         _readerPreferences.fullscreen && _readerPreferences.showPageGap ? 0 : 8;
-    return PageView.builder(
-      key: ValueKey<String>(
-        'reader-paged-${page.uri}-${_readerPreferences.readingDirection.name}-${_readerPreferences.pageFit.name}-${_readerPreferences.showPageGap}',
-      ),
-      controller: _readerPageController,
-      reverse: reverse,
-      itemCount: page.imageUrls.length,
-      onPageChanged: _handleReaderPageChanged,
-      itemBuilder: (BuildContext context, int index) {
-        final ScrollController scrollController =
-            _readerPageScrollControllerFor(index);
-        return LayoutBuilder(
-          builder: (BuildContext context, BoxConstraints constraints) {
-            return Padding(
-              padding: _readerPreferences.showPageGap
-                  ? EdgeInsets.only(top: topPadding, bottom: 8)
-                  : EdgeInsets.zero,
-              child: SingleChildScrollView(
-                controller: scrollController,
-                physics: const BouncingScrollPhysics(),
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                  child: _buildReaderImageFrame(
-                    context,
-                    imageUrl: page.imageUrls[index],
-                    viewportHeight:
-                        _readerPreferences.pageFit == ReaderPageFit.fitScreen
-                        ? constraints.maxHeight
-                        : null,
+    return NotificationListener<ScrollNotification>(
+      onNotification: _handleReaderScrollNotification,
+      child: PageView.builder(
+        key: ValueKey<String>(
+          'reader-paged-${page.uri}-${_readerPreferences.readingDirection.name}-${_readerPreferences.pageFit.name}-${_readerPreferences.showPageGap}',
+        ),
+        controller: _readerPageController,
+        reverse: reverse,
+        itemCount: page.imageUrls.length,
+        onPageChanged: _handleReaderPageChanged,
+        itemBuilder: (BuildContext context, int index) {
+          final ScrollController scrollController =
+              _readerPageScrollControllerFor(index);
+          return LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints constraints) {
+              return Padding(
+                padding: _readerPreferences.showPageGap
+                    ? EdgeInsets.only(top: topPadding, bottom: 8)
+                    : EdgeInsets.zero,
+                child: NotificationListener<ScrollNotification>(
+                  onNotification: _handleReaderScrollNotification,
+                  child: SingleChildScrollView(
+                    controller: scrollController,
+                    physics: const BouncingScrollPhysics(),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxHeight,
+                      ),
+                      child: _buildReaderImageFrame(
+                        context,
+                        imageUrl: page.imageUrls[index],
+                        viewportHeight:
+                            _readerPreferences.pageFit ==
+                                ReaderPageFit.fitScreen
+                            ? constraints.maxHeight
+                            : null,
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            );
-          },
-        );
-      },
+              );
+            },
+          );
+        },
+      ),
     );
   }
 

@@ -107,3 +107,17 @@ class StandardPageLoadController<T> {
     }
   }
 }
+
+StandardPageLoadHandle<T>? acceptedPendingNavigationLoad<T>(
+  StandardPageLoadHandle<T>? pendingLoad,
+  Uri uri, {
+  required StandardPageLoadEventSource source,
+}) {
+  if (pendingLoad == null || pendingLoad.completer.isCompleted) {
+    return null;
+  }
+  if (!pendingLoad.accepts(uri, source: source)) {
+    return null;
+  }
+  return pendingLoad;
+}

@@ -10,13 +10,11 @@ enum ReaderPageFit { fitWidth, fitScreen }
 
 enum ReaderOpeningPosition { top, center }
 
+enum DownloadStorageMode { defaultDirectory, customDirectory }
+
 String _enumName(Enum value) => value.name;
 
-T _enumValue<T extends Enum>(
-  Iterable<T> values,
-  Object? rawValue,
-  T fallback,
-) {
+T _enumValue<T extends Enum>(Iterable<T> values, Object? rawValue, T fallback) {
   final String value = (rawValue as String?)?.trim() ?? '';
   for (final T entry in values) {
     if (_enumName(entry) == value) {
@@ -24,6 +22,49 @@ T _enumValue<T extends Enum>(
     }
   }
   return fallback;
+}
+
+@immutable
+class DownloadPreferences {
+  const DownloadPreferences({
+    this.mode = DownloadStorageMode.defaultDirectory,
+    this.customBasePath = '',
+  });
+
+  factory DownloadPreferences.fromJson(Map<String, Object?> json) {
+    return DownloadPreferences(
+      mode: _enumValue<DownloadStorageMode>(
+        DownloadStorageMode.values,
+        json['mode'],
+        DownloadStorageMode.defaultDirectory,
+      ),
+      customBasePath: (json['customBasePath'] as String?)?.trim() ?? '',
+    );
+  }
+
+  final DownloadStorageMode mode;
+  final String customBasePath;
+
+  bool get usesCustomDirectory =>
+      mode == DownloadStorageMode.customDirectory &&
+      customBasePath.trim().isNotEmpty;
+
+  DownloadPreferences copyWith({
+    DownloadStorageMode? mode,
+    String? customBasePath,
+  }) {
+    return DownloadPreferences(
+      mode: mode ?? this.mode,
+      customBasePath: customBasePath ?? this.customBasePath,
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'mode': _enumName(mode),
+      'customBasePath': customBasePath,
+    };
+  }
 }
 
 @immutable
@@ -150,6 +191,7 @@ class AppPreferences {
   const AppPreferences({
     this.themePreference = AppThemePreference.system,
     this.readerPreferences = const ReaderPreferences(),
+    this.downloadPreferences = const DownloadPreferences(),
   });
 
   factory AppPreferences.fromJson(Map<String, Object?> json) {
@@ -166,11 +208,19 @@ class AppPreferences {
               (Object? key, Object? value) => MapEntry(key.toString(), value),
             ),
       ),
+      downloadPreferences: DownloadPreferences.fromJson(
+        ((json['downloadPreferences'] as Map<Object?, Object?>?) ??
+                const <Object?, Object?>{})
+            .map(
+              (Object? key, Object? value) => MapEntry(key.toString(), value),
+            ),
+      ),
     );
   }
 
   final AppThemePreference themePreference;
   final ReaderPreferences readerPreferences;
+  final DownloadPreferences downloadPreferences;
 
   ThemeMode get materialThemeMode {
     switch (themePreference) {
@@ -186,10 +236,12 @@ class AppPreferences {
   AppPreferences copyWith({
     AppThemePreference? themePreference,
     ReaderPreferences? readerPreferences,
+    DownloadPreferences? downloadPreferences,
   }) {
     return AppPreferences(
       themePreference: themePreference ?? this.themePreference,
       readerPreferences: readerPreferences ?? this.readerPreferences,
+      downloadPreferences: downloadPreferences ?? this.downloadPreferences,
     );
   }
 
@@ -197,6 +249,7 @@ class AppPreferences {
     return <String, Object?>{
       'themePreference': _enumName(themePreference),
       'readerPreferences': readerPreferences.toJson(),
+      'downloadPreferences': downloadPreferences.toJson(),
     };
   }
 }

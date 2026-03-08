@@ -761,12 +761,16 @@ class _DetailHeroCard extends StatelessWidget {
     required this.page,
     required this.onReadNow,
     required this.onDownload,
+    required this.onToggleCollection,
+    required this.isCollectionBusy,
     required this.onTagTap,
   });
 
   final DetailPageData page;
   final VoidCallback? onReadNow;
   final VoidCallback? onDownload;
+  final VoidCallback? onToggleCollection;
+  final bool isCollectionBusy;
   final ValueChanged<String> onTagTap;
 
   @override
@@ -842,12 +846,31 @@ class _DetailHeroCard extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: FilledButton.tonalIcon(
-                  onPressed: onDownload,
-                  icon: const Icon(Icons.download_rounded),
-                  label: const Text('缓存章节'),
+                  onPressed: isCollectionBusy ? null : onToggleCollection,
+                  icon: isCollectionBusy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(
+                          page.isCollected
+                              ? Icons.bookmark_remove_rounded
+                              : Icons.bookmark_add_rounded,
+                        ),
+                  label: Text(page.isCollected ? '取消收藏' : '加入书架'),
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.tonalIcon(
+              onPressed: onDownload,
+              icon: const Icon(Icons.download_rounded),
+              label: const Text('缓存章节'),
+            ),
           ),
         ],
       ),
@@ -1023,118 +1046,6 @@ class _ChapterGrid extends StatelessWidget {
             ? child
             : KeyedSubtree(key: itemKey, child: child);
       },
-    );
-  }
-}
-
-class _CachedComicCard extends StatelessWidget {
-  const _CachedComicCard({
-    required this.item,
-    required this.onTap,
-    this.onDelete,
-  });
-
-  final CachedComicLibraryEntry item;
-  final VoidCallback? onTap;
-  final VoidCallback? onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final ColorScheme colorScheme = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: Stack(
-                fit: StackFit.expand,
-                children: <Widget>[
-                  item.coverUrl.isEmpty
-                      ? const _PlaceholderImage()
-                      : CachedNetworkImage(
-                          imageUrl: item.coverUrl,
-                          fit: BoxFit.cover,
-                          cacheManager: EasyCopyImageCaches.coverCache,
-                          errorWidget:
-                              (BuildContext context, String url, Object error) {
-                                return const _PlaceholderImage();
-                              },
-                        ),
-                  Positioned(
-                    right: 8,
-                    top: 8,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: <Widget>[
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xCC111111),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            '${item.cachedChapterCount}话',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        if (onDelete != null) ...<Widget>[
-                          const SizedBox(width: 6),
-                          Material(
-                            color: const Color(0xCC111111),
-                            borderRadius: BorderRadius.circular(999),
-                            child: InkWell(
-                              onTap: onDelete,
-                              borderRadius: BorderRadius.circular(999),
-                              child: const Padding(
-                                padding: EdgeInsets.all(6),
-                                child: Icon(
-                                  Icons.delete_outline_rounded,
-                                  size: 16,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            item.comicTitle,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.w800),
-          ),
-          if (item.chapters.isNotEmpty) ...<Widget>[
-            const SizedBox(height: 4),
-            Text(
-              '最近缓存：${item.chapters.first.chapterTitle}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: colorScheme.onSurface.withValues(alpha: 0.64),
-                fontSize: 11,
-              ),
-            ),
-          ],
-        ],
-      ),
     );
   }
 }

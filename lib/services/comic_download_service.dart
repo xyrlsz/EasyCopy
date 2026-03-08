@@ -2,9 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:easy_copy/config/app_config.dart';
+import 'package:easy_copy/models/app_preferences.dart';
 import 'package:easy_copy/models/page_models.dart';
+import 'package:easy_copy/services/download_storage_service.dart';
+import 'package:easy_copy/services/download_queue_store.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
 
 typedef ChapterDownloadProgressCallback =
     Future<void> Function(ChapterDownloadProgress progress);
@@ -40,6 +42,16 @@ class ChapterDownloadResult {
   final Directory directory;
   final int fileCount;
   final File manifestFile;
+}
+
+class DownloadStorageMigrationResult {
+  const DownloadStorageMigrationResult({
+    required this.storageState,
+    this.cleanupWarning = '',
+  });
+
+  final DownloadStorageState storageState;
+  final String cleanupWarning;
 }
 
 class DownloadPausedException implements Exception {
@@ -99,14 +111,34 @@ class ComicDownloadService {
   ComicDownloadService({
     http.Client? client,
     Future<Directory> Function()? baseDirectoryProvider,
+    DownloadStorageService? storageService,
   }) : _client = client ?? http.Client(),
-       _baseDirectoryProvider =
-           baseDirectoryProvider ?? _defaultBaseDirectoryProvider;
+       _storageService =
+           storageService ??
+           DownloadStorageService(
+             preferencesProvider: baseDirectoryProvider == null
+                 ? null
+                 : () async => const DownloadPreferences(),
+             defaultBaseDirectoryProvider: baseDirectoryProvider,
+           );
 
   static final ComicDownloadService instance = ComicDownloadService();
 
   final http.Client _client;
-  final Future<Directory> Function() _baseDirectoryProvider;
+  final DownloadStorageService _storageService;
+
+  bool get supportsCustomStorageSelection =>
+      _storageService.supportsCustomDirectorySelection;
+
+  Future<DownloadStorageState> resolveStorageState({
+    DownloadPreferences? preferences,
+    bool verifyWritable = true,
+  }) {
+    return _storageService.resolveState(
+      preferences: preferences,
+      verifyWritable: verifyWritable,
+    );
+  }
 
   Future<ChapterDownloadResult> downloadChapter(
     ReaderPageData page, {
@@ -123,7 +155,9 @@ class ComicDownloadService {
       throw FileSystemException('当前章节没有可下载图片。');
     }
 
-    final Directory rootDirectory = await _downloadsRootDirectory();
+    final Directory rootDirectory = await _downloadsRootDirectory(
+      verifyWritable: true,
+    );
     final String resolvedComicUri =
         (comicUri ?? page.catalogHref).trim().isNotEmpty
         ? (comicUri ?? page.catalogHref).trim()
@@ -271,114 +305,124 @@ class ComicDownloadService {
   }
 
   Future<List<CachedComicLibraryEntry>> loadCachedLibrary() async {
-    final Directory rootDirectory = await _downloadsRootDirectory();
-    if (!await rootDirectory.exists()) {
-      return const <CachedComicLibraryEntry>[];
-    }
-
-    final List<Map<String, Object?>> manifests = <Map<String, Object?>>[];
-    await for (final FileSystemEntity entity in rootDirectory.list(
-      recursive: true,
-      followLinks: false,
-    )) {
-      if (entity is! File ||
-          !entity.path.endsWith('${Platform.pathSeparator}manifest.json')) {
-        continue;
+    try {
+      final Directory rootDirectory = await _downloadsRootDirectory(
+        verifyWritable: false,
+      );
+      if (!await rootDirectory.exists()) {
+        return const <CachedComicLibraryEntry>[];
       }
-      try {
-        final Object? decoded = jsonDecode(await entity.readAsString());
-        if (decoded is! Map) {
+
+      final List<Map<String, Object?>> manifests = <Map<String, Object?>>[];
+      await for (final FileSystemEntity entity in rootDirectory.list(
+        recursive: true,
+        followLinks: false,
+      )) {
+        if (entity is! File ||
+            !entity.path.endsWith('${Platform.pathSeparator}manifest.json')) {
           continue;
         }
-        manifests.add(<String, Object?>{
-          ...decoded.map(
-            (Object? key, Object? value) => MapEntry(key.toString(), value),
-          ),
-          '__directoryPath': entity.parent.path,
-        });
-      } catch (_) {
-        continue;
-      }
-    }
-
-    final Map<String, List<CachedChapterEntry>> grouped =
-        <String, List<CachedChapterEntry>>{};
-    final Map<String, String> comicTitles = <String, String>{};
-    final Map<String, String> comicHrefs = <String, String>{};
-    final Map<String, String> comicCovers = <String, String>{};
-
-    for (final Map<String, Object?> manifest in manifests) {
-      final String sourceUri = _stringValue(manifest['sourceUri']);
-      final String comicHref = _stringValue(manifest['comicUri']).isNotEmpty
-          ? _rewriteAllowedUri(_stringValue(manifest['comicUri']))
-          : _deriveComicUri(sourceUri);
-      final String comicTitle = _stringValue(manifest['comicTitle']);
-      final String coverUrl = _rewriteAllowedUri(
-        _stringValue(manifest['coverUrl']),
-      );
-      final String chapterHref =
-          _stringValue(manifest['chapterHref']).isNotEmpty
-          ? _rewriteAllowedUri(_stringValue(manifest['chapterHref']))
-          : _rewriteAllowedUri(sourceUri);
-      final String chapterTitle =
-          _stringValue(manifest['chapterLabel']).isNotEmpty
-          ? _stringValue(manifest['chapterLabel'])
-          : _stringValue(manifest['chapterTitle']);
-      final DateTime downloadedAt =
-          DateTime.tryParse(_stringValue(manifest['downloadedAt'])) ??
-          DateTime.fromMillisecondsSinceEpoch(0);
-      final String key = _comicKeyForUri(
-        comicHref.isEmpty ? sourceUri : comicHref,
-      );
-
-      if (key.isEmpty) {
-        continue;
-      }
-
-      comicTitles[key] = comicTitle.isEmpty ? '未命名漫画' : comicTitle;
-      comicHrefs[key] = comicHref;
-      if (coverUrl.isNotEmpty) {
-        comicCovers[key] = coverUrl;
-      }
-      grouped
-          .putIfAbsent(key, () => <CachedChapterEntry>[])
-          .add(
-            CachedChapterEntry(
-              chapterTitle: chapterTitle.isEmpty ? '未命名章节' : chapterTitle,
-              chapterHref: chapterHref,
-              sourceUri: _rewriteAllowedUri(sourceUri),
-              directoryPath: _stringValue(manifest['__directoryPath']),
-              downloadedAt: downloadedAt,
+        try {
+          final Object? decoded = jsonDecode(await entity.readAsString());
+          if (decoded is! Map) {
+            continue;
+          }
+          manifests.add(<String, Object?>{
+            ...decoded.map(
+              (Object? key, Object? value) => MapEntry(key.toString(), value),
             ),
-          );
-    }
-
-    final List<CachedComicLibraryEntry> comics =
-        grouped.entries
-            .map((MapEntry<String, List<CachedChapterEntry>> entry) {
-              final List<CachedChapterEntry> chapters =
-                  entry.value.toList(growable: false)..sort(
-                    (CachedChapterEntry left, CachedChapterEntry right) =>
-                        right.downloadedAt.compareTo(left.downloadedAt),
-                  );
-              return CachedComicLibraryEntry(
-                comicTitle: comicTitles[entry.key] ?? '未命名漫画',
-                comicHref: comicHrefs[entry.key] ?? '',
-                coverUrl: comicCovers[entry.key] ?? '',
-                chapters: chapters,
-              );
-            })
-            .toList(growable: false)
-          ..sort((CachedComicLibraryEntry left, CachedComicLibraryEntry right) {
-            final DateTime leftTime =
-                left.lastDownloadedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-            final DateTime rightTime =
-                right.lastDownloadedAt ??
-                DateTime.fromMillisecondsSinceEpoch(0);
-            return rightTime.compareTo(leftTime);
+            '__directoryPath': entity.parent.path,
           });
+        } catch (_) {
+          continue;
+        }
+      }
 
-    return comics;
+      final Map<String, List<CachedChapterEntry>> grouped =
+          <String, List<CachedChapterEntry>>{};
+      final Map<String, String> comicTitles = <String, String>{};
+      final Map<String, String> comicHrefs = <String, String>{};
+      final Map<String, String> comicCovers = <String, String>{};
+
+      for (final Map<String, Object?> manifest in manifests) {
+        final String sourceUri = _stringValue(manifest['sourceUri']);
+        final String comicHref = _stringValue(manifest['comicUri']).isNotEmpty
+            ? _rewriteAllowedUri(_stringValue(manifest['comicUri']))
+            : _deriveComicUri(sourceUri);
+        final String comicTitle = _stringValue(manifest['comicTitle']);
+        final String coverUrl = _rewriteAllowedUri(
+          _stringValue(manifest['coverUrl']),
+        );
+        final String chapterHref =
+            _stringValue(manifest['chapterHref']).isNotEmpty
+            ? _rewriteAllowedUri(_stringValue(manifest['chapterHref']))
+            : _rewriteAllowedUri(sourceUri);
+        final String chapterTitle =
+            _stringValue(manifest['chapterLabel']).isNotEmpty
+            ? _stringValue(manifest['chapterLabel'])
+            : _stringValue(manifest['chapterTitle']);
+        final DateTime downloadedAt =
+            DateTime.tryParse(_stringValue(manifest['downloadedAt'])) ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        final String key = _comicKeyForUri(
+          comicHref.isEmpty ? sourceUri : comicHref,
+        );
+
+        if (key.isEmpty) {
+          continue;
+        }
+
+        comicTitles[key] = comicTitle.isEmpty ? '未命名漫画' : comicTitle;
+        comicHrefs[key] = comicHref;
+        if (coverUrl.isNotEmpty) {
+          comicCovers[key] = coverUrl;
+        }
+        grouped
+            .putIfAbsent(key, () => <CachedChapterEntry>[])
+            .add(
+              CachedChapterEntry(
+                chapterTitle: chapterTitle.isEmpty ? '未命名章节' : chapterTitle,
+                chapterHref: chapterHref,
+                sourceUri: _rewriteAllowedUri(sourceUri),
+                directoryPath: _stringValue(manifest['__directoryPath']),
+                downloadedAt: downloadedAt,
+              ),
+            );
+      }
+
+      final List<CachedComicLibraryEntry> comics =
+          grouped.entries
+              .map((MapEntry<String, List<CachedChapterEntry>> entry) {
+                final List<CachedChapterEntry> chapters =
+                    entry.value.toList(growable: false)..sort(
+                      (CachedChapterEntry left, CachedChapterEntry right) =>
+                          right.downloadedAt.compareTo(left.downloadedAt),
+                    );
+                return CachedComicLibraryEntry(
+                  comicTitle: comicTitles[entry.key] ?? '未命名漫画',
+                  comicHref: comicHrefs[entry.key] ?? '',
+                  coverUrl: comicCovers[entry.key] ?? '',
+                  chapters: chapters,
+                );
+              })
+              .toList(growable: false)
+            ..sort((
+              CachedComicLibraryEntry left,
+              CachedComicLibraryEntry right,
+            ) {
+              final DateTime leftTime =
+                  left.lastDownloadedAt ??
+                  DateTime.fromMillisecondsSinceEpoch(0);
+              final DateTime rightTime =
+                  right.lastDownloadedAt ??
+                  DateTime.fromMillisecondsSinceEpoch(0);
+              return rightTime.compareTo(leftTime);
+            });
+
+      return comics;
+    } catch (_) {
+      return const <CachedComicLibraryEntry>[];
+    }
   }
 
   Future<Set<String>> loadDownloadedChapterPathKeysForComic(
@@ -518,34 +562,130 @@ class ComicDownloadService {
   }
 
   Future<void> deleteComicCacheByTitle(String comicTitle) async {
-    final Directory rootDirectory = await _downloadsRootDirectory();
-    final Directory comicDirectory = Directory(
-      _joinPath(<String>[rootDirectory.path, _sanitizePathSegment(comicTitle)]),
-    );
-    if (await comicDirectory.exists()) {
-      await comicDirectory.delete(recursive: true);
+    try {
+      final Directory rootDirectory = await _downloadsRootDirectory(
+        verifyWritable: false,
+      );
+      final Directory comicDirectory = Directory(
+        _joinPath(<String>[
+          rootDirectory.path,
+          _sanitizePathSegment(comicTitle),
+        ]),
+      );
+      if (await comicDirectory.exists()) {
+        await comicDirectory.delete(recursive: true);
+      }
+    } catch (_) {
+      return;
     }
   }
 
-  Future<Directory> _downloadsRootDirectory() async {
-    final Directory baseDirectory = await _baseDirectoryProvider();
-    final Directory root = Directory(
-      _joinPath(<String>[baseDirectory.path, 'EasyCopyDownloads']),
+  Future<void> cleanupIncompleteChapter({
+    required String comicTitle,
+    required String chapterLabel,
+  }) async {
+    final Directory rootDirectory = await _downloadsRootDirectory(
+      verifyWritable: false,
     );
-    await root.create(recursive: true);
-    return root;
+    final Directory chapterDirectory = Directory(
+      _joinPath(<String>[
+        rootDirectory.path,
+        _sanitizePathSegment(comicTitle),
+        _sanitizePathSegment(chapterLabel),
+      ]),
+    );
+    if (!await chapterDirectory.exists()) {
+      return;
+    }
+    final File manifestFile = File(
+      _joinPath(<String>[chapterDirectory.path, 'manifest.json']),
+    );
+    if (!await manifestFile.exists()) {
+      await chapterDirectory.delete(recursive: true);
+      return;
+    }
+    await for (final FileSystemEntity entity in chapterDirectory.list()) {
+      if (entity is! File || !entity.path.endsWith('.part')) {
+        continue;
+      }
+      await entity.delete();
+    }
   }
 
-  static Future<Directory> _defaultBaseDirectoryProvider() async {
-    if (Platform.isAndroid) {
-      return (await getExternalStorageDirectory()) ??
-          await getApplicationDocumentsDirectory();
+  Future<void> cleanupIncompleteTasks(Iterable<DownloadQueueTask> tasks) async {
+    final Set<String> cleanedKeys = <String>{};
+    for (final DownloadQueueTask task in tasks) {
+      final String key = '${task.comicTitle}::${task.chapterLabel}';
+      if (!cleanedKeys.add(key)) {
+        continue;
+      }
+      await cleanupIncompleteChapter(
+        comicTitle: task.comicTitle,
+        chapterLabel: task.chapterLabel,
+      );
     }
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      return (await getDownloadsDirectory()) ??
-          await getApplicationDocumentsDirectory();
+  }
+
+  Future<DownloadStorageMigrationResult> migrateCacheRoot({
+    required DownloadPreferences from,
+    required DownloadPreferences to,
+  }) async {
+    final DownloadStorageState fromState = await resolveStorageState(
+      preferences: from,
+      verifyWritable: false,
+    );
+    final DownloadStorageState toState = await resolveStorageState(
+      preferences: to,
+      verifyWritable: true,
+    );
+    if (!toState.isReady) {
+      throw FileSystemException(
+        toState.errorMessage.isEmpty ? '目标缓存目录不可用。' : toState.errorMessage,
+      );
     }
-    return await getApplicationDocumentsDirectory();
+    if (fromState.rootPath.trim().isEmpty ||
+        _normalizedPath(fromState.rootPath) ==
+            _normalizedPath(toState.rootPath)) {
+      return DownloadStorageMigrationResult(storageState: toState);
+    }
+    final Directory sourceDirectory = Directory(fromState.rootPath);
+    if (!await sourceDirectory.exists()) {
+      return DownloadStorageMigrationResult(storageState: toState);
+    }
+
+    final Directory targetDirectory = Directory(toState.rootPath);
+    await _copyDirectory(sourceDirectory, targetDirectory);
+
+    String cleanupWarning = '';
+    try {
+      await sourceDirectory.delete(recursive: true);
+    } catch (_) {
+      cleanupWarning = '旧缓存目录未能自动清理，可稍后手动删除。';
+    }
+    return DownloadStorageMigrationResult(
+      storageState: toState,
+      cleanupWarning: cleanupWarning,
+    );
+  }
+
+  Future<Directory> _downloadsRootDirectory({
+    required bool verifyWritable,
+  }) async {
+    final DownloadStorageState storageState = await resolveStorageState(
+      verifyWritable: verifyWritable,
+    );
+    if (!storageState.isReady && verifyWritable) {
+      throw FileSystemException(
+        storageState.errorMessage.isEmpty
+            ? '缓存目录不可用。'
+            : storageState.errorMessage,
+      );
+    }
+    final String rootPath = storageState.rootPath.trim();
+    if (rootPath.isEmpty) {
+      throw const FileSystemException('缓存目录不可用。');
+    }
+    return Directory(rootPath);
   }
 
   String _chapterFolderName(ReaderPageData page) {
@@ -727,5 +867,44 @@ class ComicDownloadService {
     if (shouldCancel?.call() ?? false) {
       throw const DownloadCancelledException();
     }
+  }
+
+  Future<void> _copyDirectory(Directory source, Directory target) async {
+    await target.create(recursive: true);
+    await for (final FileSystemEntity entity in source.list(
+      recursive: false,
+      followLinks: false,
+    )) {
+      final String relativePath = entity.path
+          .substring(source.path.length)
+          .replaceFirst(RegExp(r'^[\\/]+'), '');
+      if (relativePath.isEmpty) {
+        continue;
+      }
+      final String destinationPath = _joinPath(<String>[
+        target.path,
+        relativePath,
+      ]);
+      if (entity is Directory) {
+        await _copyDirectory(entity, Directory(destinationPath));
+        continue;
+      }
+      if (entity is File) {
+        final File destination = File(destinationPath);
+        await destination.parent.create(recursive: true);
+        if (await destination.exists()) {
+          await destination.delete();
+        }
+        await entity.copy(destination.path);
+      }
+    }
+  }
+
+  String _normalizedPath(String value) {
+    final String normalized = value.trim().replaceAll(
+      '/',
+      Platform.pathSeparator,
+    );
+    return Platform.isWindows ? normalized.toLowerCase() : normalized;
   }
 }

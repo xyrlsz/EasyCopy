@@ -77,9 +77,38 @@ void main() {
     },
   );
 
-  testWidgets('ProfilePageView keeps cached entry visible when logged out', (
+  testWidgets(
+    'ProfilePageView keeps download management entry visible when logged out',
+    (WidgetTester tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: ProfilePageView(
+                page: ProfilePageData.loggedOut(
+                  uri: 'https://www.2026copy.com/person/home',
+                ),
+                onAuthenticate: () {},
+                onLogout: () {},
+                onOpenComic: (_) {},
+                onOpenHistory: (_) {},
+                afterContinueReading: const Text('下载管理'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('下载管理'), findsOneWidget);
+    },
+  );
+
+  testWidgets('ProfilePageView renders cached comics as a separate section', (
     WidgetTester tester,
   ) async {
+    String? openedCachedComic;
+    String? deletedCachedComic;
+
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -92,7 +121,21 @@ void main() {
               onLogout: () {},
               onOpenComic: (_) {},
               onOpenHistory: (_) {},
-              afterContinueReading: const Text('已缓存漫画'),
+              onOpenCachedComic: (String href) {
+                openedCachedComic = href;
+              },
+              onDeleteCachedComic: (String href) {
+                deletedCachedComic = href;
+              },
+              cachedComicCards: const <ComicCardData>[
+                ComicCardData(
+                  title: '缓存作品',
+                  subtitle: '12话',
+                  secondaryText: '最近缓存：第12话',
+                  coverUrl: '',
+                  href: 'https://www.2026copy.com/comic/cached',
+                ),
+              ],
             ),
           ),
         ),
@@ -100,6 +143,17 @@ void main() {
     );
 
     expect(find.text('已缓存漫画'), findsOneWidget);
+    expect(find.text('缓存作品'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('缓存作品'));
+    await tester.tap(find.text('缓存作品'));
+    await tester.pumpAndSettle();
+    expect(openedCachedComic, 'https://www.2026copy.com/comic/cached');
+
+    await tester.ensureVisible(find.text('缓存作品'));
+    await tester.longPress(find.text('缓存作品'));
+    await tester.pumpAndSettle();
+    expect(deletedCachedComic, 'https://www.2026copy.com/comic/cached');
   });
 
   testWidgets(

@@ -223,7 +223,9 @@ class PageRepository {
     required PageQueryKey key,
     required CachedPageEnvelope envelope,
   }) async {
-    if (_isProfileUri(uri) || _isSearchUri(uri)) {
+    if (_isProfileUri(uri) ||
+        _isSearchUri(uri) ||
+        _shouldForceFreshRevalidate(uri, key)) {
       final EasyCopyPage page = await loadFresh(uri, authScope: key.authScope);
       final PageQueryKey finalKey = PageQueryKey.forUri(
         Uri.parse(page.uri),
@@ -281,6 +283,15 @@ class PageRepository {
 
   bool _isSearchUri(Uri uri) {
     return uri.path.startsWith('/search');
+  }
+
+  bool _isDetailUri(Uri uri) {
+    final String path = uri.path.toLowerCase();
+    return path.startsWith('/comic/') && !path.contains('/chapter/');
+  }
+
+  bool _shouldForceFreshRevalidate(Uri uri, PageQueryKey key) {
+    return key.authScope != 'guest' && _isDetailUri(uri);
   }
 
   String _authScopeForPage(EasyCopyPage page, String requestedAuthScope) {

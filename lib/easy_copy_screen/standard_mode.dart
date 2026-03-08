@@ -24,21 +24,24 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
   Widget _buildStandardBody(BuildContext context) {
     return RefreshIndicator(
       onRefresh: _retryCurrentPage,
-      child: ListView(
-        controller: _standardScrollController,
-        physics: const AlwaysScrollableScrollPhysics(
-          parent: BouncingScrollPhysics(),
-        ),
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
-        children: <Widget>[
-          KeyedSubtree(
-            key: ValueKey<String>(_standardContentTransitionKey),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: _buildStandardBodyChildren(context),
-            ),
+      child: NotificationListener<ScrollNotification>(
+        onNotification: _handleStandardScrollNotification,
+        child: ListView(
+          controller: _standardScrollController,
+          physics: const AlwaysScrollableScrollPhysics(
+            parent: BouncingScrollPhysics(),
           ),
-        ],
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+          children: <Widget>[
+            KeyedSubtree(
+              key: ValueKey<String>(_standardContentTransitionKey),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: _buildStandardBodyChildren(context),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -60,7 +63,6 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
   List<Widget> _buildStandardChildren(BuildContext context) {
     final List<Widget> children = <Widget>[
       ..._buildStandardTopContent(context),
-      _buildDownloadQueueBanner(),
     ];
 
     if (_page == null) {
@@ -232,85 +234,6 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
     );
   }
 
-  Widget _buildDownloadQueueBanner() {
-    return ValueListenableBuilder<DownloadQueueSnapshot>(
-      valueListenable: _downloadQueueSnapshotNotifier,
-      builder: (BuildContext context, DownloadQueueSnapshot snapshot, Widget? _) {
-        if (snapshot.isEmpty || (_selectedIndex == 3 && _isPrimaryTabContent)) {
-          return const SizedBox.shrink();
-        }
-
-        final ColorScheme colorScheme = Theme.of(context).colorScheme;
-        final DownloadQueueTask activeTask = snapshot.activeTask!;
-        final bool isPaused = snapshot.isPaused;
-        final String statusLabel = isPaused
-            ? (activeTask.progressLabel.isEmpty
-                  ? '后台缓存已暂停'
-                  : activeTask.progressLabel)
-            : activeTask.progressLabel;
-
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 18),
-          child: Material(
-            color: isPaused
-                ? colorScheme.secondaryContainer.withValues(alpha: 0.52)
-                : colorScheme.primaryContainer.withValues(alpha: 0.42),
-            borderRadius: BorderRadius.circular(20),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      Icon(
-                        isPaused
-                            ? Icons.pause_circle_rounded
-                            : Icons.download_for_offline_rounded,
-                        color: isPaused
-                            ? colorScheme.secondary
-                            : colorScheme.primary,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          '${activeTask.comicTitle} · 剩余 ${snapshot.remainingCount} 话',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontWeight: FontWeight.w900),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: isPaused
-                            ? _resumeDownloadQueue
-                            : _pauseDownloadQueue,
-                        child: Text(isPaused ? '继续' : '暂停'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    statusLabel,
-                    style: TextStyle(
-                      color: colorScheme.onSurface.withValues(alpha: 0.72),
-                      height: 1.4,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  LinearProgressIndicator(
-                    value: activeTask.fraction > 0 ? activeTask.fraction : null,
-                    borderRadius: BorderRadius.circular(999),
-                    minHeight: 8,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   Future<void> _openDiscoverPagerHref(String href) async {
     final Uri targetUri = AppConfig.resolveNavigationUri(
       href,
@@ -328,104 +251,8 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
     await _scrollCurrentStandardPageToTop();
   }
 
-  Widget _buildDownloadQueueSection() {
-    return ValueListenableBuilder<DownloadQueueSnapshot>(
-      valueListenable: _downloadQueueSnapshotNotifier,
-      builder:
-          (BuildContext context, DownloadQueueSnapshot snapshot, Widget? _) {
-            if (snapshot.isEmpty) {
-              return const SizedBox.shrink();
-            }
-
-            final Map<String, List<DownloadQueueTask>> groupedTasks =
-                <String, List<DownloadQueueTask>>{};
-            for (final DownloadQueueTask task in snapshot.tasks) {
-              groupedTasks
-                  .putIfAbsent(task.comicKey, () => <DownloadQueueTask>[])
-                  .add(task);
-            }
-
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 18),
-              child: _SurfaceBlock(
-                title: '缓存任务',
-                actionLabel: snapshot.isPaused ? '继续' : '暂停',
-                onActionTap: snapshot.isPaused
-                    ? _resumeDownloadQueue
-                    : _pauseDownloadQueue,
-                child: Column(
-                  children: groupedTasks.entries
-                      .map((MapEntry<String, List<DownloadQueueTask>> entry) {
-                        final List<DownloadQueueTask> tasks = entry.value;
-                        final DownloadQueueTask displayTask = tasks.first;
-                        final bool isActiveComic =
-                            snapshot.activeTask?.comicKey ==
-                            displayTask.comicKey;
-                        final DownloadQueueTask taskForStatus = isActiveComic
-                            ? snapshot.activeTask!
-                            : displayTask;
-                        final String subtitle = isActiveComic
-                            ? taskForStatus.progressLabel
-                            : '等待缓存 ${tasks.length} 话';
-
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Material(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerLow,
-                            borderRadius: BorderRadius.circular(18),
-                            child: ListTile(
-                              contentPadding: const EdgeInsets.fromLTRB(
-                                16,
-                                8,
-                                8,
-                                8,
-                              ),
-                              leading: CircleAvatar(
-                                backgroundColor: isActiveComic
-                                    ? Theme.of(context).colorScheme.primary
-                                    : Theme.of(
-                                        context,
-                                      ).colorScheme.surfaceContainerHighest,
-                                foregroundColor: Colors.white,
-                                child: Text('${tasks.length}'),
-                              ),
-                              title: Text(
-                                displayTask.comicTitle,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              subtitle: Padding(
-                                padding: const EdgeInsets.only(top: 4),
-                                child: Text(
-                                  subtitle,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              trailing: IconButton(
-                                onPressed: () =>
-                                    _confirmRemoveQueuedComic(displayTask),
-                                icon: const Icon(Icons.delete_outline_rounded),
-                              ),
-                            ),
-                          ),
-                        );
-                      })
-                      .toList(growable: false),
-                ),
-              ),
-            );
-          },
-    );
-  }
-
   List<Widget> _buildProfileSections(ProfilePageData page) {
-    final List<Widget> sections = <Widget>[
+    return <Widget>[
       ProfilePageView(
         page: page,
         onAuthenticate: _openAuthFlow,
@@ -454,64 +281,150 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
         onThemePreferenceChanged: (AppThemePreference preference) {
           unawaited(_preferencesController.setThemePreference(preference));
         },
-        afterContinueReading: _buildCachedComicsSection(),
+        afterContinueReading: _buildDownloadManagementEntry(),
+        cachedComicCards: _cachedComicCardsForProfile(),
+        onOpenCachedComic: _openCachedComicFromProfile,
+        onDeleteCachedComic: _deleteCachedComicFromProfile,
       ),
     ];
-
-    sections.add(const SizedBox(height: 18));
-    sections.add(_buildDownloadQueueSection());
-    return sections;
   }
 
-  Widget _buildCachedComicsSection() {
-    if (_isLoadingCachedComics) {
-      return _SurfaceBlock(
-        title: '已缓存漫画',
-        child: Row(
-          children: const <Widget>[
-            SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-            SizedBox(width: 12),
-            Text('正在读取本地缓存…'),
-          ],
-        ),
-      );
-    }
-
-    if (_cachedComics.isEmpty) {
-      return _SurfaceBlock(
-        title: '已缓存漫画',
-        child: const Text('还没有缓存章节，去漫画详情页挑几话下载吧。'),
-      );
-    }
-
-    return _SurfaceBlock(
-      title: '已缓存漫画',
-      child: SizedBox(
-        height: 218,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          itemCount: _cachedComics.length,
-          separatorBuilder: (_, __) => const SizedBox(width: 12),
-          itemBuilder: (BuildContext context, int index) {
-            final CachedComicLibraryEntry item = _cachedComics[index];
-            return SizedBox(
-              width: 144,
-              child: _CachedComicCard(
-                item: item,
-                onTap: item.comicHref.isEmpty
-                    ? null
-                    : () => _navigateToHref(item.comicHref),
-                onDelete: () => _confirmDeleteCachedComic(item),
-              ),
+  Widget _buildDownloadManagementEntry() {
+    return ValueListenableBuilder<DownloadQueueSnapshot>(
+      valueListenable: _downloadQueueSnapshotNotifier,
+      builder:
+          (
+            BuildContext context,
+            DownloadQueueSnapshot queueSnapshot,
+            Widget? _,
+          ) {
+            return ValueListenableBuilder<DownloadStorageState>(
+              valueListenable: _downloadStorageStateNotifier,
+              builder:
+                  (
+                    BuildContext context,
+                    DownloadStorageState storageState,
+                    Widget? _,
+                  ) {
+                    final String statusLabel = queueSnapshot.isEmpty
+                        ? '空闲'
+                        : queueSnapshot.isPaused
+                        ? '已暂停'
+                        : '缓存中';
+                    final String queueLabel = queueSnapshot.isEmpty
+                        ? '0 话'
+                        : '${queueSnapshot.remainingCount} 话';
+                    final String pathLabel = storageState.isLoading
+                        ? '正在读取缓存目录…'
+                        : storageState.errorMessage.isNotEmpty
+                        ? '目录异常：${storageState.errorMessage}'
+                        : '当前目录：${_downloadStorageService.summarizePath(storageState.displayPath)}';
+                    return DownloadManagementEntryCard(
+                      statusLabel: statusLabel,
+                      queueLabel: queueLabel,
+                      pathLabel: pathLabel,
+                      onTap: _openDownloadManagementPage,
+                    );
+                  },
             );
           },
-        ),
+    );
+  }
+
+  void _openDownloadManagementPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) {
+          return DownloadManagementPage(
+            queueListenable: _downloadQueueSnapshotNotifier,
+            storageStateListenable: _downloadStorageStateNotifier,
+            storageBusyListenable: _downloadStorageBusyNotifier,
+            supportsCustomDirectorySelection:
+                _downloadService.supportsCustomStorageSelection,
+            onPauseQueue: () {
+              unawaited(_pauseDownloadQueue());
+            },
+            onResumeQueue: () {
+              unawaited(_resumeDownloadQueue());
+            },
+            onStopComicTasks: (DownloadQueueTask task) {
+              unawaited(_confirmRemoveQueuedComic(task));
+            },
+            onRemoveTask: (DownloadQueueTask task) {
+              unawaited(_confirmRemoveQueuedTask(task));
+            },
+            onRetryTask: (DownloadQueueTask task) {
+              unawaited(_retryDownloadQueueTask(task));
+            },
+            onPickStorageDirectory: () {
+              unawaited(_pickDownloadStorageDirectory());
+            },
+            onResetStorageDirectory: () {
+              unawaited(_resetDownloadStorageDirectory());
+            },
+          );
+        },
       ),
     );
+  }
+
+  List<ComicCardData> _cachedComicCardsForProfile() {
+    return _cachedComics
+        .map((CachedComicLibraryEntry item) {
+          final String latestChapterTitle = item.chapters.isEmpty
+              ? ''
+              : item.chapters.first.chapterTitle;
+          return ComicCardData(
+            title: item.comicTitle,
+            subtitle: '${item.cachedChapterCount}话',
+            secondaryText: latestChapterTitle.isEmpty
+                ? ''
+                : '最近缓存：$latestChapterTitle',
+            coverUrl: item.coverUrl,
+            href: _cachedComicCardKey(item),
+          );
+        })
+        .toList(growable: false);
+  }
+
+  String _cachedComicCardKey(CachedComicLibraryEntry item) {
+    if (item.comicHref.isNotEmpty) {
+      return item.comicHref;
+    }
+    return 'cache-title:${item.comicTitle}';
+  }
+
+  CachedComicLibraryEntry? _cachedComicByCardKey(String key) {
+    return _cachedComics.cast<CachedComicLibraryEntry?>().firstWhere(
+      (CachedComicLibraryEntry? item) =>
+          item != null && _cachedComicCardKey(item) == key,
+      orElse: () => null,
+    );
+  }
+
+  void _openCachedComicFromProfile(String key) {
+    final CachedComicLibraryEntry? item = _cachedComicByCardKey(key);
+    if (item == null) {
+      return;
+    }
+    if (item.comicHref.isNotEmpty) {
+      _navigateToHref(item.comicHref);
+      return;
+    }
+    if (item.chapters.isNotEmpty &&
+        item.chapters.first.chapterHref.isNotEmpty) {
+      _navigateToHref(item.chapters.first.chapterHref);
+      return;
+    }
+    _showSnackBar('该缓存条目缺少可打开的链接');
+  }
+
+  void _deleteCachedComicFromProfile(String key) {
+    final CachedComicLibraryEntry? item = _cachedComicByCardKey(key);
+    if (item == null) {
+      return;
+    }
+    unawaited(_confirmDeleteCachedComic(item));
   }
 
   Set<String> _downloadedChapterPathKeysForDetail(DetailPageData page) {
@@ -548,22 +461,27 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
   }
 
   List<_ChapterPickerSection> _chapterPickerSections(DetailPageData page) {
-    if (page.chapterGroups.isNotEmpty) {
-      final List<_ChapterPickerSection> sections = page.chapterGroups
-          .where((ChapterGroupData group) => group.chapters.isNotEmpty)
-          .map(
-            (ChapterGroupData group) => _ChapterPickerSection(
-              label: group.label,
-              chapters: group.chapters,
-            ),
-          )
-          .toList(growable: false);
-      if (sections.isNotEmpty) {
-        return sections;
-      }
+    final List<ChapterData> allChapters = page.chapters.isNotEmpty
+        ? page.chapters
+        : page.chapterGroups
+              .expand((ChapterGroupData group) => group.chapters)
+              .fold<Map<String, ChapterData>>(<String, ChapterData>{}, (
+                Map<String, ChapterData> chaptersByKey,
+                ChapterData chapter,
+              ) {
+                final String key = _chapterPathKey(chapter.href);
+                if (key.isNotEmpty && !chaptersByKey.containsKey(key)) {
+                  chaptersByKey[key] = chapter;
+                }
+                return chaptersByKey;
+              })
+              .values
+              .toList(growable: false);
+    if (allChapters.isEmpty) {
+      return const <_ChapterPickerSection>[];
     }
     return <_ChapterPickerSection>[
-      _ChapterPickerSection(label: '全部章节', chapters: page.chapters),
+      _ChapterPickerSection(label: '全部章节', chapters: allChapters),
     ];
   }
 
@@ -826,7 +744,6 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
   List<Widget> _buildErrorSections(BuildContext context) {
     return <Widget>[
       ..._buildStandardTopContent(context),
-      _buildDownloadQueueBanner(),
       AppSurfaceCard(
         padding: const EdgeInsets.all(24),
         child: Column(
@@ -1091,6 +1008,7 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
     if (!mounted || _selectedDetailChapterTabKey == key) {
       return;
     }
+    _noteStandardViewportUserInteraction();
     _setStateIfMounted(() {
       _selectedDetailChapterTabKey = key;
     });
@@ -1100,6 +1018,7 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
     if (!mounted) {
       return;
     }
+    _noteStandardViewportUserInteraction();
     _setStateIfMounted(() {
       _isDetailChapterSortAscending = !_isDetailChapterSortAscending;
     });
@@ -1129,17 +1048,26 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
     if (_handledDetailAutoScrollSignature == signature) {
       return;
     }
+    final DeferredViewportTicket ticket = _detailChapterAutoScrollCoordinator
+        .beginRequest();
     _handledDetailAutoScrollSignature = signature;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _ensureDetailChapterVisible(lastReadChapterPathKey, attempts: 12);
+      _ensureDetailChapterVisible(
+        lastReadChapterPathKey,
+        routeKey: AppConfig.routeKeyForUri(Uri.parse(page.uri)),
+        attempts: 12,
+        ticket: ticket,
+      );
     });
   }
 
   void _ensureDetailChapterVisible(
     String chapterPathKey, {
+    required String routeKey,
     required int attempts,
+    required DeferredViewportTicket ticket,
   }) {
-    if (!mounted) {
+    if (!_isActiveDetailChapterAutoScroll(ticket, routeKey: routeKey)) {
       return;
     }
     final BuildContext? targetContext =
@@ -1150,7 +1078,9 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
           const Duration(milliseconds: 100),
           () => _ensureDetailChapterVisible(
             chapterPathKey,
+            routeKey: routeKey,
             attempts: attempts - 1,
+            ticket: ticket,
           ),
         );
       }
@@ -1421,6 +1351,8 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
             ? () => _openDetailChapter(page, page.startReadingHref)
             : null,
         onDownload: () => _showDetailDownloadPicker(page),
+        onToggleCollection: () => unawaited(_toggleDetailCollection(page)),
+        isCollectionBusy: _isUpdatingCollection,
         onTagTap: _navigateToHref,
       ),
       const SizedBox(height: 18),

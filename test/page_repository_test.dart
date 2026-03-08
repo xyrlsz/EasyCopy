@@ -154,6 +154,54 @@ void main() {
     },
   );
 
+  test(
+    'authenticated detail revalidation bypasses the probe shortcut',
+    () async {
+      int loaderCount = 0;
+      int probeCount = 0;
+      final PageRepository repository = PageRepository(
+        cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
+        probeService: _buildProbeService(
+          '<html></html>',
+          onProbe: () {
+            probeCount += 1;
+          },
+        ),
+        apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
+        standardPageLoader: (Uri uri, {required String authScope}) async {
+          loaderCount += 1;
+          return DetailPageData(
+            title: '详情',
+            uri: uri.toString(),
+            coverUrl: '',
+            aliases: '',
+            authors: '',
+            heat: '',
+            updatedAt: '2026-03-07',
+            status: '连载中',
+            summary: '',
+            tags: const <LinkAction>[],
+            startReadingHref: '',
+            chapterGroups: const <ChapterGroupData>[],
+            chapters: const <ChapterData>[],
+            comicId: 'comic-demo',
+            isCollected: loaderCount.isEven,
+          );
+        },
+      );
+
+      final Uri uri = Uri.parse('https://example.com/comic/demo');
+      final PageQueryKey key = PageQueryKey.forUri(uri, authScope: 'user:42');
+      await repository.loadFresh(uri, authScope: 'user:42');
+      final CachedPageHit? cachedHit = await repository.readCached(key);
+
+      await repository.revalidate(uri, key: key, envelope: cachedHit!.envelope);
+
+      expect(loaderCount, 2);
+      expect(probeCount, 0);
+    },
+  );
+
   test('authScope remains isolated for the same route', () async {
     int loaderCount = 0;
     final PageRepository repository = PageRepository(
@@ -272,65 +320,70 @@ void main() {
     );
   });
 
-  test('search routes load through the API client instead of the standard loader', () async {
-    int loaderCount = 0;
-    int searchLoadCount = 0;
-    final PageRepository repository = PageRepository(
-      cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
-      probeService: _buildProbeService('<html></html>'),
-      apiClient: FakeSiteApiClient(
-        _buildLoggedOutProfile,
-        searchLoader: ({
-          required String query,
-          required int page,
-          required String qType,
-        }) async {
-          searchLoadCount += 1;
-          expect(query, 'robot');
-          expect(page, 2);
-          expect(qType, 'author');
-          return DiscoverPageData(
-            title: '搜索',
-            uri: 'https://example.com/search?page=2&q=robot&q_type=author',
-            filters: const <FilterGroupData>[],
-            items: const <ComicCardData>[
-              ComicCardData(
-                title: 'Robot Hero',
-                coverUrl: '',
-                href: 'https://example.com/comic/robot-hero',
-              ),
-            ],
-            pager: const PagerData(
-              currentLabel: '2',
-              totalLabel: '共3页 · 25条',
-            ),
-            spotlight: const <ComicCardData>[],
+  test(
+    'search routes load through the API client instead of the standard loader',
+    () async {
+      int loaderCount = 0;
+      int searchLoadCount = 0;
+      final PageRepository repository = PageRepository(
+        cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
+        probeService: _buildProbeService('<html></html>'),
+        apiClient: FakeSiteApiClient(
+          _buildLoggedOutProfile,
+          searchLoader:
+              ({
+                required String query,
+                required int page,
+                required String qType,
+              }) async {
+                searchLoadCount += 1;
+                expect(query, 'robot');
+                expect(page, 2);
+                expect(qType, 'author');
+                return DiscoverPageData(
+                  title: '搜索',
+                  uri:
+                      'https://example.com/search?page=2&q=robot&q_type=author',
+                  filters: const <FilterGroupData>[],
+                  items: const <ComicCardData>[
+                    ComicCardData(
+                      title: 'Robot Hero',
+                      coverUrl: '',
+                      href: 'https://example.com/comic/robot-hero',
+                    ),
+                  ],
+                  pager: const PagerData(
+                    currentLabel: '2',
+                    totalLabel: '共3页 · 25条',
+                  ),
+                  spotlight: const <ComicCardData>[],
+                );
+              },
+        ),
+        standardPageLoader: (Uri uri, {required String authScope}) async {
+          loaderCount += 1;
+          return HomePageData(
+            title: 'should-not-load',
+            uri: uri.toString(),
+            heroBanners: const <HeroBannerData>[],
+            sections: const <ComicSectionData>[],
           );
         },
-      ),
-      standardPageLoader: (Uri uri, {required String authScope}) async {
-        loaderCount += 1;
-        return HomePageData(
-          title: 'should-not-load',
-          uri: uri.toString(),
-          heroBanners: const <HeroBannerData>[],
-          sections: const <ComicSectionData>[],
-        );
-      },
-    );
+      );
 
-    final Uri searchUri = Uri.parse(
-      'https://example.com/search?q=robot&page=2&q_type=author',
-    );
-    final EasyCopyPage page = await repository.loadFresh(
-      searchUri,
-      authScope: 'guest',
-    );
+      final Uri searchUri = Uri.parse(
+        'https://example.com/search?q=robot&page=2&q_type=author',
+      );
+      final EasyCopyPage page = await repository.loadFresh(
+        searchUri,
+        authScope: 'guest',
+      );
 
-    expect(page, isA<DiscoverPageData>());
-    expect(loaderCount, 0);
-    expect(searchLoadCount, 1);
-  });
+      expect(page, isA<DiscoverPageData>());
+      expect(loaderCount, 0);
+      expect(searchLoadCount, 1);
+    },
+  );
 }
 
 PageProbeService _buildProbeService(String html, {void Function()? onProbe}) {
@@ -349,10 +402,7 @@ Future<ProfilePageData> _buildLoggedOutProfile() async {
 }
 
 class FakeSiteApiClient extends SiteApiClient {
-  FakeSiteApiClient(
-    this._loader, {
-    this.searchLoader,
-  })
+  FakeSiteApiClient(this._loader, {this.searchLoader})
     : super(
         client: MockClient(
           (http.Request request) async =>
@@ -365,7 +415,8 @@ class FakeSiteApiClient extends SiteApiClient {
     required String query,
     required int page,
     required String qType,
-  })? searchLoader;
+  })?
+  searchLoader;
 
   @override
   Future<ProfilePageData> loadProfile() {
@@ -382,7 +433,8 @@ class FakeSiteApiClient extends SiteApiClient {
       required String query,
       required int page,
       required String qType,
-    })? loader = searchLoader;
+    })?
+    loader = searchLoader;
     if (loader == null) {
       return Future<DiscoverPageData>.value(
         DiscoverPageData(

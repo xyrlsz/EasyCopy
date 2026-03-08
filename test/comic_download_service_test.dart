@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:easy_copy/models/app_preferences.dart';
 import 'package:easy_copy/models/page_models.dart';
 import 'package:easy_copy/services/comic_download_service.dart';
+import 'package:easy_copy/services/download_storage_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -125,46 +127,178 @@ void main() {
     expect(comicDirectory.existsSync(), isFalse);
   });
 
-  test('loadCachedReaderPage rebuilds a local reader payload from manifest', () async {
-    final Directory tempDir = await Directory.systemTemp.createTemp(
-      'easy_copy_cached_reader_payload',
-    );
-    addTearDown(() => tempDir.delete(recursive: true));
+  test(
+    'loadCachedReaderPage rebuilds a local reader payload from manifest',
+    () async {
+      final Directory tempDir = await Directory.systemTemp.createTemp(
+        'easy_copy_cached_reader_payload',
+      );
+      addTearDown(() => tempDir.delete(recursive: true));
 
-    final ComicDownloadService service = ComicDownloadService(
-      client: MockClient((http.Request request) async {
-        return http.Response.bytes(
-          utf8.encode('image:${request.url.pathSegments.last}'),
-          200,
-          headers: <String, String>{'content-type': 'image/jpeg'},
-        );
-      }),
-      baseDirectoryProvider: () async => tempDir,
-    );
+      final ComicDownloadService service = ComicDownloadService(
+        client: MockClient((http.Request request) async {
+          return http.Response.bytes(
+            utf8.encode('image:${request.url.pathSegments.last}'),
+            200,
+            headers: <String, String>{'content-type': 'image/jpeg'},
+          );
+        }),
+        baseDirectoryProvider: () async => tempDir,
+      );
 
-    await service.downloadChapter(
-      buildReaderPage(),
-      chapterLabel: 'Chapter 1',
-      comicUri: 'https://www.2026copy.com/comic/demo',
-      coverUrl: 'https://img.example/demo.jpg',
-    );
+      await service.downloadChapter(
+        buildReaderPage(),
+        chapterLabel: 'Chapter 1',
+        comicUri: 'https://www.2026copy.com/comic/demo',
+        coverUrl: 'https://img.example/demo.jpg',
+      );
 
-    final ReaderPageData? cachedPage = await service.loadCachedReaderPage(
-      'https://www.2026copy.com/comic/demo/chapter/1',
-      prevHref: 'https://www.2026copy.com/comic/demo/chapter/0',
-      nextHref: 'https://www.2026copy.com/comic/demo/chapter/2',
-      catalogHref: 'https://www.2026copy.com/comic/demo',
-    );
+      final ReaderPageData? cachedPage = await service.loadCachedReaderPage(
+        'https://www.2026copy.com/comic/demo/chapter/1',
+        prevHref: 'https://www.2026copy.com/comic/demo/chapter/0',
+        nextHref: 'https://www.2026copy.com/comic/demo/chapter/2',
+        catalogHref: 'https://www.2026copy.com/comic/demo',
+      );
 
-    expect(cachedPage, isNotNull);
-    expect(cachedPage?.comicTitle, 'Demo Comic');
-    expect(cachedPage?.chapterTitle, 'Chapter 1');
-    expect(cachedPage?.prevHref, contains('/chapter/0'));
-    expect(cachedPage?.nextHref, contains('/chapter/2'));
-    expect(cachedPage?.imageUrls, hasLength(2));
-    expect(
-      cachedPage?.imageUrls.every((String value) => value.startsWith('file:')),
-      isTrue,
-    );
-  });
+      expect(cachedPage, isNotNull);
+      expect(cachedPage?.comicTitle, 'Demo Comic');
+      expect(cachedPage?.chapterTitle, 'Chapter 1');
+      expect(cachedPage?.prevHref, contains('/chapter/0'));
+      expect(cachedPage?.nextHref, contains('/chapter/2'));
+      expect(cachedPage?.imageUrls, hasLength(2));
+      expect(
+        cachedPage?.imageUrls.every(
+          (String value) => value.startsWith('file:'),
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'cleanupIncompleteChapter removes partial chapters and keeps completed ones',
+    () async {
+      final Directory tempDir = await Directory.systemTemp.createTemp(
+        'easy_copy_cleanup_chapter_',
+      );
+      addTearDown(() => tempDir.delete(recursive: true));
+
+      final ComicDownloadService service = ComicDownloadService(
+        client: MockClient((http.Request request) async {
+          return http.Response.bytes(
+            utf8.encode('image:${request.url.pathSegments.last}'),
+            200,
+            headers: <String, String>{'content-type': 'image/jpeg'},
+          );
+        }),
+        baseDirectoryProvider: () async => tempDir,
+      );
+
+      final String rootPath =
+          '${tempDir.path}${Platform.pathSeparator}'
+          '${DownloadStorageService.downloadsDirectoryName}';
+      final Directory partialChapterDirectory = Directory(
+        '$rootPath${Platform.pathSeparator}Demo Comic'
+        '${Platform.pathSeparator}Chapter 2',
+      );
+      await partialChapterDirectory.create(recursive: true);
+      await File(
+        '${partialChapterDirectory.path}${Platform.pathSeparator}001.jpg',
+      ).writeAsString('partial');
+
+      final Directory completedChapterDirectory = Directory(
+        '$rootPath${Platform.pathSeparator}Demo Comic'
+        '${Platform.pathSeparator}Chapter 3',
+      );
+      await completedChapterDirectory.create(recursive: true);
+      await File(
+        '${completedChapterDirectory.path}${Platform.pathSeparator}manifest.json',
+      ).writeAsString('{"imageCount":1}');
+      await File(
+        '${completedChapterDirectory.path}${Platform.pathSeparator}001.jpg',
+      ).writeAsString('done');
+      await File(
+        '${completedChapterDirectory.path}${Platform.pathSeparator}001.jpg.part',
+      ).writeAsString('temp');
+
+      await service.cleanupIncompleteChapter(
+        comicTitle: 'Demo Comic',
+        chapterLabel: 'Chapter 2',
+      );
+      await service.cleanupIncompleteChapter(
+        comicTitle: 'Demo Comic',
+        chapterLabel: 'Chapter 3',
+      );
+
+      expect(partialChapterDirectory.existsSync(), isFalse);
+      expect(completedChapterDirectory.existsSync(), isTrue);
+      expect(
+        File(
+          '${completedChapterDirectory.path}${Platform.pathSeparator}001.jpg.part',
+        ).existsSync(),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'migrateCacheRoot copies cached data into the new storage root',
+    () async {
+      final Directory sourceBase = await Directory.systemTemp.createTemp(
+        'easy_copy_migrate_source_',
+      );
+      final Directory targetBase = await Directory.systemTemp.createTemp(
+        'easy_copy_migrate_target_',
+      );
+      addTearDown(() => sourceBase.delete(recursive: true));
+      addTearDown(() => targetBase.delete(recursive: true));
+
+      final DownloadStorageService storageService = DownloadStorageService(
+        preferencesProvider: () async => const DownloadPreferences(),
+        defaultBaseDirectoryProvider: () async => sourceBase,
+      );
+      final ComicDownloadService service = ComicDownloadService(
+        client: MockClient((http.Request request) async {
+          return http.Response.bytes(
+            utf8.encode('image:${request.url.pathSegments.last}'),
+            200,
+            headers: <String, String>{'content-type': 'image/jpeg'},
+          );
+        }),
+        storageService: storageService,
+      );
+
+      final Directory sourceChapterDirectory = Directory(
+        '${sourceBase.path}${Platform.pathSeparator}'
+        '${DownloadStorageService.downloadsDirectoryName}'
+        '${Platform.pathSeparator}Demo Comic'
+        '${Platform.pathSeparator}Chapter 1',
+      );
+      await sourceChapterDirectory.create(recursive: true);
+      await File(
+        '${sourceChapterDirectory.path}${Platform.pathSeparator}manifest.json',
+      ).writeAsString('{"imageCount":1}');
+      await File(
+        '${sourceChapterDirectory.path}${Platform.pathSeparator}001.jpg',
+      ).writeAsString('done');
+
+      final DownloadStorageMigrationResult result = await service
+          .migrateCacheRoot(
+            from: const DownloadPreferences(),
+            to: DownloadPreferences(
+              mode: DownloadStorageMode.customDirectory,
+              customBasePath: targetBase.path,
+            ),
+          );
+
+      final File migratedManifest = File(
+        '${result.storageState.rootPath}${Platform.pathSeparator}Demo Comic'
+        '${Platform.pathSeparator}Chapter 1'
+        '${Platform.pathSeparator}manifest.json',
+      );
+      expect(result.storageState.isReady, isTrue);
+      expect(migratedManifest.existsSync(), isTrue);
+      expect(sourceChapterDirectory.existsSync(), isFalse);
+    },
+  );
 }
