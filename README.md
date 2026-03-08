@@ -119,8 +119,6 @@ lib/
 test/          单元测试、组件测试、HTML 夹具
 docs/          README 使用的真机截图
 android/       Android 工程
-ios/           iOS 工程
-macos/         macOS 工程
 ```
 
 ## 本地开发
@@ -139,7 +137,7 @@ flutter pub get
 ### 运行
 
 ```bash
-flutter run
+flutter run -d android
 ```
 
 ### Android 构建
@@ -174,6 +172,7 @@ flutter test
 
 ## 备注
 
-- Android / iOS / macOS 原生工程标识已统一到 `com.huangusaki.easycopy`
+- 当前仓库仅保留 Android 工程
+- Android 原生工程标识已统一到 `com.huangusaki.easycopy`
 - 项目强依赖目标站点的 DOM 结构和接口返回格式，不是通用爬虫框架
 - `unknown` 页面类型表示该路由还没有完成原生重建
