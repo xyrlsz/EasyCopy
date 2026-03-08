@@ -32,6 +32,7 @@ import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 const Duration _pageFadeTransitionDuration = Duration(milliseconds: 200);
+const Duration _readerExitFadeDuration = Duration(milliseconds: 220);
 const String _detailAllChapterTabKey = '__detail_all__';
 
 Widget _buildFadeSwitchTransition(Widget child, Animation<double> animation) {
@@ -103,6 +104,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   bool _isUpdatingHostSettings = false;
   bool _isReaderSettingsOpen = false;
   bool _isReaderChapterControlsVisible = false;
+  bool _isReaderExitTransitionActive = false;
   bool _readerPresentationSyncScheduled = false;
   bool _suspendStandardScrollTracking = false;
   String _selectedDetailChapterTabKey = _detailAllChapterTabKey;
@@ -2266,6 +2268,16 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }
 
   Future<void> _handleBackNavigation() async {
+    if (_isReaderMode) {
+      await _runReaderExitTransition(() async {
+        await _handleReaderAwareBackNavigation();
+      });
+      return;
+    }
+    await _handleReaderAwareBackNavigation();
+  }
+
+  Future<void> _handleReaderAwareBackNavigation() async {
     _persistVisiblePageState();
     final EasyCopyPage? page = _page;
     if (page is ReaderPageData && await _handleReaderBackNavigation(page)) {
@@ -2288,6 +2300,35 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       return;
     }
     await SystemNavigator.pop();
+  }
+
+  Future<void> _runReaderExitTransition(Future<void> Function() action) async {
+    if (!_isReaderMode || _isReaderExitTransitionActive || !mounted) {
+      await action();
+      return;
+    }
+
+    setState(() {
+      _isReaderExitTransitionActive = true;
+    });
+
+    final Future<void> fadeFuture = Future<void>.delayed(
+      _readerExitFadeDuration,
+    );
+    try {
+      await action();
+      await fadeFuture;
+    } finally {
+      if (!mounted) {
+        _isReaderExitTransitionActive = false;
+      } else if (_page is ReaderPageData) {
+        setState(() {
+          _isReaderExitTransitionActive = false;
+        });
+      } else {
+        _isReaderExitTransitionActive = false;
+      }
+    }
   }
 
   Future<bool> _handleReaderBackNavigation(ReaderPageData page) async {
@@ -4951,9 +4992,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         physics: const AlwaysScrollableScrollPhysics(
           parent: BouncingScrollPhysics(),
         ),
-        padding: showGap
-            ? EdgeInsets.fromLTRB(12, topPadding, 12, 16)
-            : const EdgeInsets.only(bottom: 16),
+        padding: EdgeInsets.only(top: topPadding, bottom: 16),
         itemCount: page.imageUrls.length,
         itemBuilder: (BuildContext context, int index) {
           return Padding(
@@ -4994,7 +5033,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
           builder: (BuildContext context, BoxConstraints constraints) {
             return Padding(
               padding: _readerPreferences.showPageGap
-                  ? EdgeInsets.fromLTRB(12, topPadding, 12, 8)
+                  ? EdgeInsets.only(top: topPadding, bottom: 8)
                   : EdgeInsets.zero,
               child: SingleChildScrollView(
                 controller: scrollController,
@@ -5025,7 +5064,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
     final bool showGap = _readerPreferences.showPageGap;
-    final double borderRadius = showGap ? 22 : 0;
     final BoxFit fit = _readerPreferences.pageFit == ReaderPageFit.fitWidth
         ? BoxFit.fitWidth
         : BoxFit.contain;
@@ -5074,41 +5112,41 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
             },
           );
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: showGap
-            ? colorScheme.surface
-            : colorScheme.surfaceContainerLowest,
-        borderRadius: BorderRadius.circular(borderRadius),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(borderRadius),
-        child: image,
-      ),
+    return ColoredBox(
+      color: showGap ? colorScheme.surface : colorScheme.surfaceContainerLowest,
+      child: image,
     );
   }
 
   Widget _buildReaderMode(BuildContext context, ReaderPageData page) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
-    return Scaffold(
-      backgroundColor: colorScheme.surfaceContainerLowest,
-      body: SizedBox(
-        key: _readerViewportKey,
-        child: Stack(
-          fit: StackFit.expand,
-          children: <Widget>[
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTapUp: _handleReaderTapUp,
-                child: _readerPreferences.isPaged
-                    ? _buildReaderPagedContent(context, page)
-                    : _buildReaderScrollableContent(context, page),
-              ),
+    return AnimatedOpacity(
+      opacity: _isReaderExitTransitionActive ? 0 : 1,
+      duration: _readerExitFadeDuration,
+      curve: Curves.easeOutCubic,
+      child: IgnorePointer(
+        ignoring: _isReaderExitTransitionActive,
+        child: Scaffold(
+          backgroundColor: colorScheme.surfaceContainerLowest,
+          body: SizedBox(
+            key: _readerViewportKey,
+            child: Stack(
+              fit: StackFit.expand,
+              children: <Widget>[
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTapUp: _handleReaderTapUp,
+                    child: _readerPreferences.isPaged
+                        ? _buildReaderPagedContent(context, page)
+                        : _buildReaderScrollableContent(context, page),
+                  ),
+                ),
+                _buildReaderOverlay(context, page),
+                _buildReaderChapterControlsOverlay(context, page),
+              ],
             ),
-            _buildReaderOverlay(context, page),
-            _buildReaderChapterControlsOverlay(context, page),
-          ],
+          ),
         ),
       ),
     );
