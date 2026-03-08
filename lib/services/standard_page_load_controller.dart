@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:easy_copy/config/app_config.dart';
+import 'package:easy_copy/services/navigation_request_guard.dart';
 import 'package:easy_copy/services/page_repository.dart';
 import 'package:easy_copy/services/primary_tab_session_store.dart';
 
@@ -24,25 +25,28 @@ class StandardPageLoadHandle<T> {
   StandardPageLoadHandle({
     required Uri requestedUri,
     required this.queryKey,
-    required this.intent,
-    required this.preserveCurrentPage,
     required this.loadId,
-    required this.targetTabIndex,
+    required this.requestContext,
     required this.completer,
   }) : requestedUri = AppConfig.rewriteToCurrentHost(requestedUri),
        acceptedRouteKeys = <String>{queryKey.routeKey};
 
   final Uri requestedUri;
   final PageQueryKey queryKey;
-  final NavigationIntent intent;
-  final bool preserveCurrentPage;
   final int loadId;
-  final int targetTabIndex;
+  final NavigationRequestContext requestContext;
   final Completer<T> completer;
   final Set<String> acceptedRouteKeys;
   final Set<String> startedRouteKeys = <String>{};
 
   bool hasStartedAcceptedNavigation = false;
+  Uri? lastStartedAcceptedUri;
+
+  NavigationIntent get intent => requestContext.intent;
+
+  bool get preserveCurrentPage => requestContext.preserveVisiblePage;
+
+  int get targetTabIndex => requestContext.targetTabIndex;
 
   bool accepts(Uri uri, {required StandardPageLoadEventSource source}) {
     final Uri rewrittenUri = AppConfig.rewriteToCurrentHost(uri);
@@ -55,12 +59,7 @@ class StandardPageLoadHandle<T> {
         if (isAcceptedRoute) {
           return true;
         }
-        if (hasStartedAcceptedNavigation &&
-            resolveNavigationTabIndex(
-                  rewrittenUri,
-                  sourceTabIndex: targetTabIndex,
-                ) ==
-                targetTabIndex) {
+        if (_canAcceptRedirectTo(rewrittenUri)) {
           acceptedRouteKeys.add(routeKey);
           return true;
         }
@@ -71,6 +70,7 @@ class StandardPageLoadHandle<T> {
         }
         startedRouteKeys.add(routeKey);
         hasStartedAcceptedNavigation = true;
+        lastStartedAcceptedUri = rewrittenUri;
         return true;
       case StandardPageLoadEventSource.pageFinished:
       case StandardPageLoadEventSource.payload:
@@ -79,6 +79,40 @@ class StandardPageLoadHandle<T> {
         return acceptedRouteKeys.contains(routeKey);
     }
   }
+
+  bool _canAcceptRedirectTo(Uri candidateUri) {
+    final Uri anchorUri = lastStartedAcceptedUri ?? requestedUri;
+    if (_isSameContentRedirect(anchorUri, candidateUri)) {
+      return true;
+    }
+    return _isAllowedPlaceholderRedirect(anchorUri, candidateUri);
+  }
+}
+
+bool _isSameContentRedirect(Uri from, Uri to) {
+  if (from.path != to.path) {
+    return false;
+  }
+  final String path = from.path.toLowerCase();
+  return _isDetailRoute(path) || path.contains('/chapter/');
+}
+
+bool _isAllowedPlaceholderRedirect(Uri from, Uri to) {
+  final String fromPath = from.path.toLowerCase();
+  final String toPath = to.path.toLowerCase();
+  if (fromPath.startsWith('/topic/')) {
+    return toPath.startsWith('/comics') ||
+        toPath.startsWith('/recommend') ||
+        toPath.startsWith('/newest') ||
+        toPath.startsWith('/filter') ||
+        toPath.startsWith('/search') ||
+        toPath.startsWith('/topic/');
+  }
+  return false;
+}
+
+bool _isDetailRoute(String path) {
+  return path.startsWith('/comic/') && !path.contains('/chapter/');
 }
 
 class StandardPageLoadController<T> {

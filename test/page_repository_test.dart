@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:easy_copy/config/app_config.dart';
 import 'package:easy_copy/models/page_models.dart';
+import 'package:easy_copy/services/navigation_request_guard.dart';
 import 'package:easy_copy/services/page_cache_store.dart';
 import 'package:easy_copy/services/page_probe_service.dart';
 import 'package:easy_copy/services/page_repository.dart';
@@ -41,15 +42,20 @@ void main() {
       cacheStore: buildCacheStore(now),
       probeService: _buildProbeService('<html></html>'),
       apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
-      standardPageLoader: (Uri uri, {required String authScope}) async {
-        loaderCount += 1;
-        return HomePageData(
-          title: '首页',
-          uri: uri.toString(),
-          heroBanners: const <HeroBannerData>[],
-          sections: const <ComicSectionData>[],
-        );
-      },
+      standardPageLoader:
+          (
+            Uri uri, {
+            required String authScope,
+            NavigationRequestContext? requestContext,
+          }) async {
+            loaderCount += 1;
+            return HomePageData(
+              title: '首页',
+              uri: uri.toString(),
+              heroBanners: const <HeroBannerData>[],
+              sections: const <ComicSectionData>[],
+            );
+          },
     );
 
     final Uri uri = Uri.parse('https://example.com/');
@@ -78,10 +84,15 @@ void main() {
         cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
         probeService: _buildProbeService('<html></html>'),
         apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
-        standardPageLoader: (Uri uri, {required String authScope}) async {
-          loaderCount += 1;
-          return completer.future;
-        },
+        standardPageLoader:
+            (
+              Uri uri, {
+              required String authScope,
+              NavigationRequestContext? requestContext,
+            }) async {
+              loaderCount += 1;
+              return completer.future;
+            },
       );
 
       final Uri uri = Uri.parse('https://example.com/comics');
@@ -128,15 +139,20 @@ void main() {
           },
         ),
         apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
-        standardPageLoader: (Uri uri, {required String authScope}) async {
-          loaderCount += 1;
-          return HomePageData(
-            title: loaderCount == 1 ? '旧首页' : '新首页',
-            uri: uri.toString(),
-            heroBanners: const <HeroBannerData>[],
-            sections: const <ComicSectionData>[],
-          );
-        },
+        standardPageLoader:
+            (
+              Uri uri, {
+              required String authScope,
+              NavigationRequestContext? requestContext,
+            }) async {
+              loaderCount += 1;
+              return HomePageData(
+                title: loaderCount == 1 ? '旧首页' : '新首页',
+                uri: uri.toString(),
+                heroBanners: const <HeroBannerData>[],
+                sections: const <ComicSectionData>[],
+              );
+            },
       );
 
       final Uri uri = Uri.parse('https://example.com/');
@@ -168,26 +184,31 @@ void main() {
           },
         ),
         apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
-        standardPageLoader: (Uri uri, {required String authScope}) async {
-          loaderCount += 1;
-          return DetailPageData(
-            title: '详情',
-            uri: uri.toString(),
-            coverUrl: '',
-            aliases: '',
-            authors: '',
-            heat: '',
-            updatedAt: '2026-03-07',
-            status: '连载中',
-            summary: '',
-            tags: const <LinkAction>[],
-            startReadingHref: '',
-            chapterGroups: const <ChapterGroupData>[],
-            chapters: const <ChapterData>[],
-            comicId: 'comic-demo',
-            isCollected: loaderCount.isEven,
-          );
-        },
+        standardPageLoader:
+            (
+              Uri uri, {
+              required String authScope,
+              NavigationRequestContext? requestContext,
+            }) async {
+              loaderCount += 1;
+              return DetailPageData(
+                title: '详情',
+                uri: uri.toString(),
+                coverUrl: '',
+                aliases: '',
+                authors: '',
+                heat: '',
+                updatedAt: '2026-03-07',
+                status: '连载中',
+                summary: '',
+                tags: const <LinkAction>[],
+                startReadingHref: '',
+                chapterGroups: const <ChapterGroupData>[],
+                chapters: const <ChapterData>[],
+                comicId: 'comic-demo',
+                isCollected: loaderCount.isEven,
+              );
+            },
       );
 
       final Uri uri = Uri.parse('https://example.com/comic/demo');
@@ -208,15 +229,20 @@ void main() {
       cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
       probeService: _buildProbeService('<html></html>'),
       apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
-      standardPageLoader: (Uri uri, {required String authScope}) async {
-        loaderCount += 1;
-        return HomePageData(
-          title: authScope,
-          uri: uri.toString(),
-          heroBanners: const <HeroBannerData>[],
-          sections: const <ComicSectionData>[],
-        );
-      },
+      standardPageLoader:
+          (
+            Uri uri, {
+            required String authScope,
+            NavigationRequestContext? requestContext,
+          }) async {
+            loaderCount += 1;
+            return HomePageData(
+              title: authScope,
+              uri: uri.toString(),
+              heroBanners: const <HeroBannerData>[],
+              sections: const <ComicSectionData>[],
+            );
+          },
     );
 
     final Uri uri = Uri.parse('https://example.com/comics');
@@ -251,14 +277,19 @@ void main() {
             history: const <ProfileHistoryItem>[],
           ),
         ),
-        standardPageLoader: (Uri uri, {required String authScope}) async {
-          return HomePageData(
-            title: '首页',
-            uri: uri.toString(),
-            heroBanners: const <HeroBannerData>[],
-            sections: const <ComicSectionData>[],
-          );
-        },
+        standardPageLoader:
+            (
+              Uri uri, {
+              required String authScope,
+              NavigationRequestContext? requestContext,
+            }) async {
+              return HomePageData(
+                title: '首页',
+                uri: uri.toString(),
+                heroBanners: const <HeroBannerData>[],
+                sections: const <ComicSectionData>[],
+              );
+            },
       );
 
       await repository.loadFresh(AppConfig.profileUri, authScope: 'user:42');
@@ -290,14 +321,19 @@ void main() {
       cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
       probeService: _buildProbeService('<html></html>'),
       apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
-      standardPageLoader: (Uri uri, {required String authScope}) async {
-        return HomePageData(
-          title: '重定向首页',
-          uri: 'https://example.com/comics?page=2',
-          heroBanners: const <HeroBannerData>[],
-          sections: const <ComicSectionData>[],
-        );
-      },
+      standardPageLoader:
+          (
+            Uri uri, {
+            required String authScope,
+            NavigationRequestContext? requestContext,
+          }) async {
+            return HomePageData(
+              title: '重定向首页',
+              uri: 'https://example.com/comics?page=2',
+              heroBanners: const <HeroBannerData>[],
+              sections: const <ComicSectionData>[],
+            );
+          },
     );
 
     final Uri requestedUri = Uri.parse('https://example.com/topic/jump');
@@ -360,15 +396,20 @@ void main() {
                 );
               },
         ),
-        standardPageLoader: (Uri uri, {required String authScope}) async {
-          loaderCount += 1;
-          return HomePageData(
-            title: 'should-not-load',
-            uri: uri.toString(),
-            heroBanners: const <HeroBannerData>[],
-            sections: const <ComicSectionData>[],
-          );
-        },
+        standardPageLoader:
+            (
+              Uri uri, {
+              required String authScope,
+              NavigationRequestContext? requestContext,
+            }) async {
+              loaderCount += 1;
+              return HomePageData(
+                title: 'should-not-load',
+                uri: uri.toString(),
+                heroBanners: const <HeroBannerData>[],
+                sections: const <ComicSectionData>[],
+              );
+            },
       );
 
       final Uri searchUri = Uri.parse(

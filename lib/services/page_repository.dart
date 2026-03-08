@@ -2,13 +2,18 @@ import 'dart:collection';
 
 import 'package:easy_copy/config/app_config.dart';
 import 'package:easy_copy/models/page_models.dart';
+import 'package:easy_copy/services/navigation_request_guard.dart';
 import 'package:easy_copy/services/page_cache_store.dart';
 import 'package:easy_copy/services/page_probe_service.dart';
 import 'package:easy_copy/services/site_api_client.dart';
 import 'package:flutter/foundation.dart';
 
 typedef StandardPageFreshLoader =
-    Future<EasyCopyPage> Function(Uri uri, {required String authScope});
+    Future<EasyCopyPage> Function(
+      Uri uri, {
+      required String authScope,
+      NavigationRequestContext? requestContext,
+    });
 
 @immutable
 class PageQueryKey {
@@ -114,7 +119,11 @@ class PageRepository {
     return hit;
   }
 
-  Future<EasyCopyPage> loadFresh(Uri uri, {required String authScope}) async {
+  Future<EasyCopyPage> loadFresh(
+    Uri uri, {
+    required String authScope,
+    NavigationRequestContext? requestContext,
+  }) async {
     final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
     final PageQueryKey requestedKey = PageQueryKey.forUri(
       targetUri,
@@ -128,6 +137,7 @@ class PageRepository {
     final Future<EasyCopyPage> future = _loadFreshInternal(
       targetUri,
       requestedKey: requestedKey,
+      requestContext: requestContext,
     );
     _inFlightLoads[requestedKey] = future;
 
@@ -142,6 +152,7 @@ class PageRepository {
     Uri uri, {
     required PageQueryKey key,
     required CachedPageEnvelope envelope,
+    NavigationRequestContext? requestContext,
   }) async {
     final Future<void>? existing = _inFlightRevalidations[key];
     if (existing != null) {
@@ -152,6 +163,7 @@ class PageRepository {
       AppConfig.rewriteToCurrentHost(uri),
       key: key,
       envelope: envelope,
+      requestContext: requestContext,
     );
     _inFlightRevalidations[key] = future;
 
@@ -183,6 +195,7 @@ class PageRepository {
   Future<EasyCopyPage> _loadFreshInternal(
     Uri uri, {
     required PageQueryKey requestedKey,
+    NavigationRequestContext? requestContext,
   }) async {
     final EasyCopyPage page = _isProfileUri(uri)
         ? await _apiClient.loadProfile()
@@ -192,7 +205,11 @@ class PageRepository {
             page: int.tryParse(uri.queryParameters['page'] ?? '') ?? 1,
             qType: uri.queryParameters['q_type'] ?? '',
           )
-        : await _standardPageLoader(uri, authScope: requestedKey.authScope);
+        : await _standardPageLoader(
+            uri,
+            authScope: requestedKey.authScope,
+            requestContext: requestContext,
+          );
 
     final PageQueryKey finalKey = PageQueryKey.forUri(
       Uri.parse(page.uri),
@@ -222,11 +239,16 @@ class PageRepository {
     Uri uri, {
     required PageQueryKey key,
     required CachedPageEnvelope envelope,
+    NavigationRequestContext? requestContext,
   }) async {
     if (_isProfileUri(uri) ||
         _isSearchUri(uri) ||
         _shouldForceFreshRevalidate(uri, key)) {
-      final EasyCopyPage page = await loadFresh(uri, authScope: key.authScope);
+      final EasyCopyPage page = await loadFresh(
+        uri,
+        authScope: key.authScope,
+        requestContext: requestContext,
+      );
       final PageQueryKey finalKey = PageQueryKey.forUri(
         Uri.parse(page.uri),
         authScope: _authScopeForPage(page, key.authScope),
@@ -259,7 +281,11 @@ class PageRepository {
       return;
     }
 
-    final EasyCopyPage page = await loadFresh(uri, authScope: key.authScope);
+    final EasyCopyPage page = await loadFresh(
+      uri,
+      authScope: key.authScope,
+      requestContext: requestContext,
+    );
     final PageQueryKey finalKey = PageQueryKey.forUri(
       Uri.parse(page.uri),
       authScope: _authScopeForPage(page, key.authScope),

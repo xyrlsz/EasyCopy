@@ -173,4 +173,23 @@ void main() {
       expect(store.pop(2)?.uri, Uri.parse('https://example.com/rank'));
     },
   );
+
+  test(
+    'abandonCurrentRequest clears loading ownership on the current route',
+    () {
+      final PrimaryTabSessionStore store = buildStore();
+
+      store.updateCurrent(
+        1,
+        (PrimaryTabRouteEntry entry) =>
+            entry.copyWith(isLoading: true, activeRequestId: 42),
+      );
+
+      store.abandonCurrentRequest(1);
+
+      final PrimaryTabRouteEntry entry = store.currentEntry(1);
+      expect(entry.isLoading, isFalse);
+      expect(entry.activeRequestId, 0);
+    },
+  );
 }

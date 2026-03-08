@@ -28,6 +28,7 @@ class PrimaryTabRouteEntry {
     this.isLoading = false,
     this.errorMessage,
     this.standardScrollOffset = 0,
+    this.activeRequestId = 0,
   });
 
   factory PrimaryTabRouteEntry.root(Uri uri) {
@@ -44,6 +45,7 @@ class PrimaryTabRouteEntry {
   final bool isLoading;
   final String? errorMessage;
   final double standardScrollOffset;
+  final int activeRequestId;
 
   PrimaryTabRouteEntry copyWith({
     Uri? uri,
@@ -54,6 +56,7 @@ class PrimaryTabRouteEntry {
     String? errorMessage,
     bool clearError = false,
     double? standardScrollOffset,
+    int? activeRequestId,
   }) {
     final Uri nextUri = _normalizeSessionUri(uri ?? this.uri);
     return PrimaryTabRouteEntry(
@@ -63,6 +66,7 @@ class PrimaryTabRouteEntry {
       isLoading: isLoading ?? this.isLoading,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       standardScrollOffset: standardScrollOffset ?? this.standardScrollOffset,
+      activeRequestId: activeRequestId ?? this.activeRequestId,
     );
   }
 }
@@ -143,6 +147,7 @@ class PrimaryTabSessionStore {
       routeKey: AppConfig.routeKeyForUri(rootUri),
       isLoading: false,
       clearError: true,
+      activeRequestId: 0,
     );
     _stacks[tabIndex] = <PrimaryTabRouteEntry>[rootEntry];
     return rootEntry;
@@ -157,6 +162,14 @@ class PrimaryTabSessionStore {
       page: page,
       isLoading: false,
       clearError: true,
+    );
+  }
+
+  void abandonCurrentRequest(int tabIndex) {
+    updateCurrent(
+      tabIndex,
+      (PrimaryTabRouteEntry entry) =>
+          entry.copyWith(isLoading: false, activeRequestId: 0),
     );
   }
 

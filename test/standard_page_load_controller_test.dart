@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:easy_copy/config/app_config.dart';
+import 'package:easy_copy/services/navigation_request_guard.dart';
 import 'package:easy_copy/services/page_repository.dart';
 import 'package:easy_copy/services/primary_tab_session_store.dart';
 import 'package:easy_copy/services/standard_page_load_controller.dart';
@@ -16,10 +17,15 @@ void main() {
     return StandardPageLoadHandle<String>(
       requestedUri: parsedUri,
       queryKey: PageQueryKey.forUri(parsedUri, authScope: 'guest'),
-      intent: NavigationIntent.preserve,
-      preserveCurrentPage: false,
       loadId: loadId,
-      targetTabIndex: targetTabIndex ?? tabIndexForUri(parsedUri),
+      requestContext: NavigationRequestContext(
+        requestId: loadId,
+        targetTabIndex: targetTabIndex ?? tabIndexForUri(parsedUri),
+        routeKey: AppConfig.routeKeyForUri(parsedUri),
+        intent: NavigationIntent.preserve,
+        preserveVisiblePage: false,
+        sourceKind: NavigationRequestSourceKind.navigation,
+      ),
       completer: Completer<String>(),
     );
   }
@@ -82,6 +88,46 @@ void main() {
           Uri.parse('https://www.2026copy.com/comic/a'),
           source: StandardPageLoadEventSource.payload,
         ),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'stale same-tab redirect chains are rejected once the new route has started',
+    () {
+      final StandardPageLoadHandle<String> loadB = buildHandle(
+        'https://www.2026copy.com/comic/b',
+        loadId: 9,
+      );
+      final Uri uriB = Uri.parse('https://www.2026copy.com/comic/b');
+      final Uri staleA = Uri.parse('https://www.2026copy.com/comic/a');
+
+      expect(
+        loadB.accepts(
+          uriB,
+          source: StandardPageLoadEventSource.navigationRequest,
+        ),
+        isTrue,
+      );
+      expect(
+        loadB.accepts(uriB, source: StandardPageLoadEventSource.pageStarted),
+        isTrue,
+      );
+      expect(
+        loadB.accepts(staleA, source: StandardPageLoadEventSource.urlChange),
+        isFalse,
+      );
+      expect(
+        loadB.accepts(staleA, source: StandardPageLoadEventSource.pageStarted),
+        isFalse,
+      );
+      expect(
+        loadB.accepts(staleA, source: StandardPageLoadEventSource.pageFinished),
+        isFalse,
+      );
+      expect(
+        loadB.accepts(staleA, source: StandardPageLoadEventSource.payload),
         isFalse,
       );
     },

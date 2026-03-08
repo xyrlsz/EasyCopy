@@ -17,6 +17,7 @@ import 'package:easy_copy/services/download_storage_service.dart';
 import 'package:easy_copy/services/download_queue_store.dart';
 import 'package:easy_copy/services/host_manager.dart';
 import 'package:easy_copy/services/image_cache.dart';
+import 'package:easy_copy/services/navigation_request_guard.dart';
 import 'package:easy_copy/services/page_cache_store.dart';
 import 'package:easy_copy/services/page_repository.dart';
 import 'package:easy_copy/services/primary_tab_session_store.dart';
@@ -34,6 +35,7 @@ import 'package:easy_copy/widgets/native_login_screen.dart';
 import 'package:easy_copy/widgets/profile_page_view.dart';
 import 'package:easy_copy/widgets/settings_ui.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
@@ -111,6 +113,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
 
   int _selectedIndex = 0;
   int _activeLoadId = 0;
+  int _nextNavigationRequestId = 0;
   bool _isFailingOver = false;
   int _consecutiveFrameFailures = 0;
   bool _isDiscoverThemeExpanded = false;
@@ -138,6 +141,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   int _currentVisibleReaderImageIndex = 0;
   double _readerNextChapterPullDistance = 0;
   int? _batteryLevel;
+  int _discardedNavigationCommitCount = 0;
+  int _discardedNavigationCallbackCount = 0;
+  int _supersededNavigationRequestCount = 0;
   _AppliedReaderEnvironment? _appliedReaderEnvironment;
   ReaderPreferences? _lastObservedReaderPreferences;
   DownloadPreferences? _lastObservedDownloadPreferences;
@@ -160,9 +166,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   StreamSubscription<ReaderVolumeKeyAction>? _volumeKeySubscription;
   final StandardPageLoadController<EasyCopyPage> _standardPageLoadController =
       StandardPageLoadController<EasyCopyPage>();
-  NavigationIntent? _nextFreshNavigationIntent;
-  bool? _nextFreshPreserveCurrentPage;
-  int? _nextFreshTargetTabIndex;
 
   @override
   void initState() {
@@ -261,6 +264,113 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       uri,
       authScope: authScope ?? _authScopeForUri(uri),
     );
+  }
+
+  NavigationRequestContext _createNavigationRequestContext(
+    Uri uri, {
+    required int targetTabIndex,
+    required NavigationIntent intent,
+    required bool preserveVisiblePage,
+    required NavigationRequestSourceKind sourceKind,
+    bool allowBackgroundCache = true,
+  }) {
+    final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
+    return NavigationRequestContext(
+      requestId: ++_nextNavigationRequestId,
+      targetTabIndex: targetTabIndex,
+      routeKey: AppConfig.routeKeyForUri(targetUri),
+      intent: intent,
+      preserveVisiblePage: preserveVisiblePage,
+      sourceKind: sourceKind,
+      allowBackgroundCache: allowBackgroundCache,
+    );
+  }
+
+  bool _canCommitRequest(NavigationRequestContext request) {
+    return canCommitNavigationRequest(
+      currentSelectedIndex: _selectedIndex,
+      currentEntry: _tabSessionStore.currentEntry(request.targetTabIndex),
+      request: request,
+    );
+  }
+
+  void _recordSupersededRequest(
+    NavigationRequestContext request, {
+    required String phase,
+  }) {
+    _supersededNavigationRequestCount += 1;
+    if (!kDebugMode) {
+      return;
+    }
+    debugPrint(
+      '[nav] superseded request=${request.requestId} '
+      'tab=${request.targetTabIndex} route=${request.routeKey} phase=$phase '
+      'count=$_supersededNavigationRequestCount',
+    );
+  }
+
+  void _recordDiscardedNavigationMutation(
+    NavigationRequestContext request, {
+    required String phase,
+  }) {
+    _discardedNavigationCommitCount += 1;
+    if (!kDebugMode) {
+      return;
+    }
+    debugPrint(
+      '[nav] discarded commit request=${request.requestId} '
+      'tab=${request.targetTabIndex} route=${request.routeKey} phase=$phase '
+      'count=$_discardedNavigationCommitCount',
+    );
+  }
+
+  void _recordDiscardedNavigationCallback(
+    NavigationRequestContext request, {
+    required String phase,
+  }) {
+    _discardedNavigationCallbackCount += 1;
+    if (!kDebugMode) {
+      return;
+    }
+    debugPrint(
+      '[nav] discarded callback request=${request.requestId} '
+      'tab=${request.targetTabIndex} route=${request.routeKey} phase=$phase '
+      'count=$_discardedNavigationCallbackCount',
+    );
+  }
+
+  void _abandonCurrentRequest(int tabIndex, {required String phase}) {
+    final PrimaryTabRouteEntry entry = _tabSessionStore.currentEntry(tabIndex);
+    if (entry.activeRequestId == 0) {
+      return;
+    }
+    _recordSupersededRequest(
+      NavigationRequestContext(
+        requestId: entry.activeRequestId,
+        targetTabIndex: tabIndex,
+        routeKey: entry.routeKey,
+        intent: NavigationIntent.preserve,
+        preserveVisiblePage: true,
+        sourceKind: NavigationRequestSourceKind.navigation,
+      ),
+      phase: phase,
+    );
+    _tabSessionStore.abandonCurrentRequest(tabIndex);
+  }
+
+  bool _mutateOwnedRequestEntry(
+    NavigationRequestContext request,
+    PrimaryTabRouteEntry Function(PrimaryTabRouteEntry entry) updater, {
+    required String phase,
+  }) {
+    if (!_canCommitRequest(request)) {
+      _recordDiscardedNavigationMutation(request, phase: phase);
+      return false;
+    }
+    _mutateSessionState(() {
+      _tabSessionStore.updateCurrent(request.targetTabIndex, updater);
+    }, syncSearch: request.targetTabIndex == _selectedIndex);
+    return true;
   }
 
   void _mutateSessionState(VoidCallback mutation, {bool syncSearch = true}) {
@@ -449,14 +559,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
                 _pendingPageLoad;
             final bool hasActivePendingLoad =
                 pendingLoad != null && !pendingLoad.completer.isCompleted;
+            final bool canSurfacePendingLoad =
+                hasActivePendingLoad &&
+                _canCommitRequest(pendingLoad.requestContext);
             if (_isLoginUri(nextUri)) {
-              if (hasActivePendingLoad) {
+              if (canSurfacePendingLoad) {
                 unawaited(_openAuthFlow());
               }
               return NavigationDecision.prevent;
             }
             if (!AppConfig.isAllowedNavigationUri(nextUri)) {
-              if (hasActivePendingLoad) {
+              if (canSurfacePendingLoad) {
                 _showSnackBar('已阻止跳转到站外页面');
               }
               return NavigationDecision.prevent;
@@ -472,6 +585,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
                   source: StandardPageLoadEventSource.navigationRequest,
                 );
             if (acceptedLoad == null) {
+              if (hasActivePendingLoad) {
+                _recordDiscardedNavigationCallback(
+                  pendingLoad.requestContext,
+                  phase: 'navigation-request',
+                );
+              }
               return NavigationDecision.prevent;
             }
             _setPendingLocation(rewrittenUri, pendingLoad: acceptedLoad);
@@ -488,6 +607,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
                   source: StandardPageLoadEventSource.pageStarted,
                 );
             if (pendingLoad == null) {
+              final StandardPageLoadHandle<EasyCopyPage>? activeLoad =
+                  _pendingPageLoad;
+              if (activeLoad != null && !activeLoad.completer.isCompleted) {
+                _recordDiscardedNavigationCallback(
+                  activeLoad.requestContext,
+                  phase: 'page-started',
+                );
+              }
               return;
             }
             _startLoading(startedUri, pendingLoad: pendingLoad);
@@ -534,6 +661,15 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
                 );
             if (pendingLoad != null) {
               _setPendingLocation(changedUri, pendingLoad: pendingLoad);
+            } else {
+              final StandardPageLoadHandle<EasyCopyPage>? activeLoad =
+                  _pendingPageLoad;
+              if (activeLoad != null && !activeLoad.completer.isCompleted) {
+                _recordDiscardedNavigationCallback(
+                  activeLoad.requestContext,
+                  phase: 'url-change',
+                );
+              }
             }
           },
           onWebResourceError: (WebResourceError error) {
@@ -553,6 +689,10 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
                   AppConfig.rewriteToCurrentHost(failingUri),
                   source: StandardPageLoadEventSource.mainFrameError,
                 )) {
+              _recordDiscardedNavigationCallback(
+                pendingLoad.requestContext,
+                phase: 'main-frame-error',
+              );
               return;
             }
             unawaited(
@@ -636,14 +776,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         pageUri,
         source: StandardPageLoadEventSource.payload,
       )) {
+        _recordDiscardedNavigationCallback(
+          pendingLoad.requestContext,
+          phase: 'bridge-payload',
+        );
         return;
       }
       _consecutiveFrameFailures = 0;
-      _applyLoadedPage(
-        page,
-        targetTabIndex: pendingLoad.targetTabIndex,
-        switchToTab: _shouldActivateAsyncResultTab(pendingLoad.targetTabIndex),
-      );
       pendingLoad.completer.complete(page);
       _standardPageLoadController.clear(pendingLoad);
     } catch (_) {
@@ -1416,10 +1555,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     required StandardPageLoadHandle<EasyCopyPage> pendingLoad,
   }) {
     final Uri rewrittenUri = AppConfig.rewriteToCurrentHost(uri);
-    final int tabIndex = pendingLoad.targetTabIndex;
-    _mutateSessionState(() {
-      _tabSessionStore.replaceCurrent(tabIndex, rewrittenUri);
-    }, syncSearch: tabIndex == _selectedIndex);
+    _mutateOwnedRequestEntry(
+      pendingLoad.requestContext,
+      (PrimaryTabRouteEntry entry) => entry.copyWith(uri: rewrittenUri),
+      phase: 'set-pending-location',
+    );
   }
 
   void _startLoading(
@@ -1427,40 +1567,48 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     required StandardPageLoadHandle<EasyCopyPage> pendingLoad,
   }) {
     final Uri rewrittenUri = AppConfig.rewriteToCurrentHost(uri);
-    final int tabIndex = pendingLoad.targetTabIndex;
     final bool preserveCurrentPage = pendingLoad.preserveCurrentPage;
-    if (!preserveCurrentPage && tabIndex == _selectedIndex) {
+    if (!preserveCurrentPage &&
+        _canCommitRequest(pendingLoad.requestContext) &&
+        pendingLoad.targetTabIndex == _selectedIndex) {
       _resetStandardScrollPosition();
     }
     final EasyCopyPage? visiblePage = preserveCurrentPage
-        ? _tabSessionStore.currentEntry(tabIndex).page
+        ? _tabSessionStore.currentEntry(pendingLoad.targetTabIndex).page
         : null;
-    _mutateSessionState(() {
-      _tabSessionStore.replaceCurrent(tabIndex, rewrittenUri);
-      _tabSessionStore.updateCurrent(
-        tabIndex,
-        (PrimaryTabRouteEntry entry) => entry.copyWith(
-          uri: rewrittenUri,
-          page: visiblePage,
-          clearPage: !preserveCurrentPage,
-          isLoading: true,
-          clearError: true,
-          standardScrollOffset: preserveCurrentPage
-              ? entry.standardScrollOffset
-              : 0,
-        ),
-      );
-    }, syncSearch: tabIndex == _selectedIndex);
+    _mutateOwnedRequestEntry(
+      pendingLoad.requestContext,
+      (PrimaryTabRouteEntry entry) => entry.copyWith(
+        uri: rewrittenUri,
+        page: visiblePage,
+        clearPage: !preserveCurrentPage,
+        isLoading: true,
+        clearError: true,
+        standardScrollOffset: preserveCurrentPage
+            ? entry.standardScrollOffset
+            : 0,
+      ),
+      phase: 'start-loading',
+    );
   }
 
-  int _prepareRouteEntry(
+  NavigationRequestContext _prepareRouteEntry(
     Uri uri, {
     required int targetTabIndex,
     required NavigationIntent intent,
     required bool preserveVisiblePage,
+    required NavigationRequestSourceKind sourceKind,
   }) {
     final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
     final int tabIndex = targetTabIndex;
+    final NavigationRequestContext requestContext =
+        _createNavigationRequestContext(
+          targetUri,
+          targetTabIndex: tabIndex,
+          intent: intent,
+          preserveVisiblePage: preserveVisiblePage,
+          sourceKind: sourceKind,
+        );
     final bool shouldActivateTab = shouldActivateTargetTab(
       currentSelectedIndex: _selectedIndex,
       targetTabIndex: tabIndex,
@@ -1469,7 +1617,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     final EasyCopyPage? preservedPage = preserveVisiblePage
         ? _tabSessionStore.currentEntry(tabIndex).page
         : null;
+    final int previousSelectedIndex = _selectedIndex;
     _mutateSessionState(() {
+      if (previousSelectedIndex != tabIndex) {
+        _abandonCurrentRequest(
+          previousSelectedIndex,
+          phase: 'activate-tab-$tabIndex',
+        );
+      }
+      if (intent == NavigationIntent.push) {
+        _abandonCurrentRequest(tabIndex, phase: 'push-route');
+      }
       switch (intent) {
         case NavigationIntent.push:
           _tabSessionStore.push(tabIndex, targetUri);
@@ -1496,6 +1654,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
           standardScrollOffset: preserveVisiblePage
               ? entry.standardScrollOffset
               : 0,
+          activeRequestId: requestContext.requestId,
         ),
       );
     });
@@ -1512,67 +1671,70 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         routeKey: entry.routeKey,
       );
     }
-    return tabIndex;
+    return requestContext;
   }
 
-  void _markTabEntryLoading(int tabIndex, {required bool preservePage}) {
-    _mutateSessionState(() {
-      _tabSessionStore.updateCurrent(
-        tabIndex,
-        (PrimaryTabRouteEntry entry) => entry.copyWith(
-          isLoading: true,
-          clearError: true,
-          clearPage: !preservePage,
-        ),
-      );
-    }, syncSearch: tabIndex == _selectedIndex);
+  void _markTabEntryLoading(
+    NavigationRequestContext request, {
+    required bool preservePage,
+  }) {
+    _mutateOwnedRequestEntry(
+      request,
+      (PrimaryTabRouteEntry entry) => entry.copyWith(
+        isLoading: true,
+        clearError: true,
+        clearPage: !preservePage,
+      ),
+      phase: 'mark-loading',
+    );
   }
 
-  void _finishTabEntryLoading(int tabIndex, {String? message}) {
-    _mutateSessionState(() {
-      _tabSessionStore.updateCurrent(
-        tabIndex,
-        (PrimaryTabRouteEntry entry) => entry.copyWith(
-          isLoading: false,
-          errorMessage: message,
-          clearError: message == null,
-        ),
-      );
-    }, syncSearch: tabIndex == _selectedIndex);
+  void _finishTabEntryLoading(
+    NavigationRequestContext request, {
+    String? message,
+  }) {
+    _mutateOwnedRequestEntry(
+      request,
+      (PrimaryTabRouteEntry entry) => entry.copyWith(
+        isLoading: false,
+        errorMessage: message,
+        clearError: message == null,
+      ),
+      phase: 'finish-loading',
+    );
   }
 
   void _finishMatchingRouteLoading(
-    int tabIndex,
-    String routeKey, {
+    NavigationRequestContext request, {
     String? message,
   }) {
-    _mutateSessionState(() {
-      _tabSessionStore.updateError(tabIndex, routeKey, message);
-    }, syncSearch: tabIndex == _selectedIndex);
+    _finishTabEntryLoading(request, message: message);
   }
 
   Future<EasyCopyPage> _loadStandardPageFresh(
     Uri uri, {
     required String authScope,
+    NavigationRequestContext? requestContext,
   }) async {
     final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
+    final NavigationRequestContext loadRequestContext =
+        requestContext ??
+        _createNavigationRequestContext(
+          targetUri,
+          targetTabIndex: resolveNavigationTabIndex(targetUri),
+          intent: NavigationIntent.preserve,
+          preserveVisiblePage: false,
+          sourceKind: NavigationRequestSourceKind.navigation,
+        );
     final int loadId = ++_activeLoadId;
-    final bool preserveCurrentPage = _nextFreshPreserveCurrentPage ?? false;
-    final int targetTabIndex =
-        _nextFreshTargetTabIndex ?? resolveNavigationTabIndex(targetUri);
     final StandardPageLoadHandle<EasyCopyPage> pendingLoad =
         StandardPageLoadHandle<EasyCopyPage>(
           requestedUri: targetUri,
           queryKey: _pageQueryKeyForUri(targetUri, authScope: authScope),
-          intent: _nextFreshNavigationIntent ?? NavigationIntent.preserve,
-          preserveCurrentPage: preserveCurrentPage,
           loadId: loadId,
-          targetTabIndex: targetTabIndex,
+          requestContext: loadRequestContext,
           completer: Completer<EasyCopyPage>(),
         );
-    _nextFreshNavigationIntent = null;
-    _nextFreshPreserveCurrentPage = null;
-    _nextFreshTargetTabIndex = null;
     _standardPageLoadController.begin(pendingLoad);
     await _syncSessionCookiesToCurrentHost();
     if (!_standardPageLoadController.isCurrent(pendingLoad)) {
@@ -1588,13 +1750,21 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     );
   }
 
-  void _applyLoadedPage(
+  bool _applyLoadedPage(
     EasyCopyPage page, {
+    NavigationRequestContext? requestContext,
     int? targetTabIndex,
     bool switchToTab = true,
   }) {
     final Uri pageUri = AppConfig.rewriteToCurrentHost(Uri.parse(page.uri));
-    final int tabIndex = targetTabIndex ?? tabIndexForUri(pageUri);
+    final int tabIndex =
+        requestContext?.targetTabIndex ??
+        targetTabIndex ??
+        tabIndexForUri(pageUri);
+    if (requestContext != null && !_canCommitRequest(requestContext)) {
+      _recordDiscardedNavigationMutation(requestContext, phase: 'apply-page');
+      return false;
+    }
     final EasyCopyPage? previousPage =
         (switchToTab || tabIndex == _selectedIndex) ? _page : null;
     final String? previousReaderUri =
@@ -1618,11 +1788,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     _scheduleReaderPresentationSync();
 
     if (tabIndex != _selectedIndex) {
-      return;
+      return true;
     }
     if (page is ReaderPageData) {
       _handleReaderPageLoaded(page, previousUri: previousReaderUri);
-      return;
+      return true;
     }
     final PrimaryTabRouteEntry entry = _tabSessionStore.currentEntry(tabIndex);
     _restoreStandardScrollPosition(
@@ -1630,6 +1800,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       tabIndex: tabIndex,
       routeKey: entry.routeKey,
     );
+    return true;
   }
 
   void _failPendingPageLoad(String message) {
@@ -1641,24 +1812,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       pendingLoad.completer.completeError(message);
     }
     _standardPageLoadController.clear(pendingLoad);
-
-    final PrimaryTabRouteEntry currentEntry = _tabSessionStore.currentEntry(
-      pendingLoad.targetTabIndex,
-    );
-    if (currentEntry.page != null) {
-      _finishTabEntryLoading(pendingLoad.targetTabIndex);
-      if (pendingLoad.targetTabIndex == _selectedIndex) {
-        _showSnackBar(message);
-      }
-      return;
-    }
-    _mutateSessionState(() {
-      _tabSessionStore.updateError(
-        pendingLoad.targetTabIndex,
-        currentEntry.routeKey,
-        message,
-      );
-    }, syncSearch: pendingLoad.targetTabIndex == _selectedIndex);
   }
 
   Future<void> _loadUri(
@@ -1713,45 +1866,56 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       _showSnackBar('已阻止跳转到站外页面');
       return;
     }
-    if (_isReaderChapterUri(targetUri)) {
-      final bool openedFromCache = await _tryOpenCachedChapterReader(
-        targetUri,
-        targetTabIndex: resolvedTargetTabIndex,
-        historyMode: historyMode,
-        preserveVisiblePage: preserveVisiblePage,
-        context: cachedChapterContext,
-      );
-      if (openedFromCache) {
-        return;
-      }
-    }
-
     _consecutiveFrameFailures = 0;
-    final int targetTabIndex = _prepareRouteEntry(
+    final NavigationRequestContext requestContext = _prepareRouteEntry(
       targetUri,
       targetTabIndex: resolvedTargetTabIndex,
       intent: historyMode,
       preserveVisiblePage: preserveVisiblePage,
+      sourceKind: NavigationRequestSourceKind.navigation,
     );
+    if (_isReaderChapterUri(targetUri)) {
+      final bool openedFromCache = await _tryOpenCachedChapterReader(
+        targetUri,
+        requestContext: requestContext.copyWith(
+          sourceKind: NavigationRequestSourceKind.cachedReader,
+        ),
+        context: cachedChapterContext,
+      );
+      if (openedFromCache || !_canCommitRequest(requestContext)) {
+        return;
+      }
+    }
     if (!bypassCache) {
       final CachedPageHit? cachedHit = await _pageRepository.readCached(key);
+      if (!_canCommitRequest(requestContext)) {
+        _recordDiscardedNavigationMutation(
+          requestContext,
+          phase: 'cached-read',
+        );
+        return;
+      }
       if (cachedHit != null) {
         if (!_shouldBypassUnknownCache(targetUri, cachedHit.page)) {
           _applyLoadedPage(
             cachedHit.page,
-            targetTabIndex: targetTabIndex,
-            switchToTab: _shouldActivateAsyncResultTab(targetTabIndex),
+            requestContext: requestContext,
+            switchToTab: _shouldActivateAsyncResultTab(
+              requestContext.targetTabIndex,
+            ),
           );
           if (!cachedHit.envelope.isSoftExpired(DateTime.now())) {
             return;
           }
-          _markTabEntryLoading(targetTabIndex, preservePage: true);
+          _markTabEntryLoading(requestContext, preservePage: true);
           unawaited(
             _revalidateCachedPage(
               targetUri,
               key: key,
               cachedEntry: cachedHit.envelope,
-              targetTabIndex: targetTabIndex,
+              requestContext: requestContext.copyWith(
+                sourceKind: NavigationRequestSourceKind.revalidate,
+              ),
             ),
           );
           return;
@@ -1759,21 +1923,25 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       }
     }
 
-    _nextFreshNavigationIntent = historyMode;
-    _nextFreshPreserveCurrentPage = preserveVisiblePage;
-    _nextFreshTargetTabIndex = targetTabIndex;
+    if (!_canCommitRequest(requestContext)) {
+      _recordDiscardedNavigationMutation(requestContext, phase: 'fresh-load');
+      return;
+    }
     try {
-      await _pageRepository.loadFresh(targetUri, authScope: key.authScope);
-    } catch (error) {
-      await _handlePageLoadFailure(
-        error,
-        targetTabIndex: targetTabIndex,
-        routeKey: key.routeKey,
+      final EasyCopyPage freshPage = await _pageRepository.loadFresh(
+        targetUri,
+        authScope: key.authScope,
+        requestContext: requestContext,
       );
-    } finally {
-      _nextFreshNavigationIntent = null;
-      _nextFreshPreserveCurrentPage = null;
-      _nextFreshTargetTabIndex = null;
+      _applyLoadedPage(
+        freshPage,
+        requestContext: requestContext,
+        switchToTab: _shouldActivateAsyncResultTab(
+          requestContext.targetTabIndex,
+        ),
+      );
+    } catch (error) {
+      await _handlePageLoadFailure(error, requestContext: requestContext);
     }
   }
 
@@ -1900,35 +2068,38 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     Uri uri, {
     required PageQueryKey key,
     required CachedPageEnvelope cachedEntry,
-    required int targetTabIndex,
+    required NavigationRequestContext requestContext,
   }) async {
     try {
-      _nextFreshPreserveCurrentPage = true;
-      _nextFreshTargetTabIndex = targetTabIndex;
-      await _pageRepository.revalidate(uri, key: key, envelope: cachedEntry);
-      final PrimaryTabRouteEntry entry = _tabSessionStore.currentEntry(
-        targetTabIndex,
+      await _pageRepository.revalidate(
+        uri,
+        key: key,
+        envelope: cachedEntry,
+        requestContext: requestContext,
       );
-      if (entry.routeKey != key.routeKey) {
+      if (!_canCommitRequest(requestContext)) {
+        _recordDiscardedNavigationMutation(
+          requestContext,
+          phase: 'revalidate-complete',
+        );
         return;
       }
       final CachedPageHit? refreshedHit = await _pageRepository.readCached(key);
       if (refreshedHit != null) {
         _applyLoadedPage(
           refreshedHit.page,
-          targetTabIndex: targetTabIndex,
-          switchToTab: _shouldActivateAsyncResultTab(targetTabIndex),
+          requestContext: requestContext,
+          switchToTab: _shouldActivateAsyncResultTab(
+            requestContext.targetTabIndex,
+          ),
         );
         return;
       }
-      _finishMatchingRouteLoading(targetTabIndex, key.routeKey);
+      _finishMatchingRouteLoading(requestContext);
     } on SupersededPageLoadException {
-      _finishMatchingRouteLoading(targetTabIndex, key.routeKey);
+      _finishMatchingRouteLoading(requestContext);
     } catch (_) {
-      _finishMatchingRouteLoading(targetTabIndex, key.routeKey);
-    } finally {
-      _nextFreshPreserveCurrentPage = null;
-      _nextFreshTargetTabIndex = null;
+      _finishMatchingRouteLoading(requestContext);
     }
   }
 
@@ -1943,31 +2114,43 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     }
     final Uri profileUri = AppConfig.profileUri;
     const int profileTabIndex = 3;
-    final int targetTabIndex = _prepareRouteEntry(
+    final NavigationRequestContext requestContext = _prepareRouteEntry(
       profileUri,
       targetTabIndex: profileTabIndex,
       intent: historyMode,
       preserveVisiblePage: preserveVisiblePage,
+      sourceKind: NavigationRequestSourceKind.profile,
     );
     final PageQueryKey key = _pageQueryKeyForUri(profileUri);
     if (!forceRefresh) {
       final CachedPageHit? cachedHit = await _pageRepository.readCached(key);
+      if (!_canCommitRequest(requestContext)) {
+        _recordDiscardedNavigationMutation(
+          requestContext,
+          phase: 'profile-cached-read',
+        );
+        return;
+      }
       if (cachedHit != null) {
         _applyLoadedPage(
           cachedHit.page,
-          targetTabIndex: targetTabIndex,
-          switchToTab: _shouldActivateAsyncResultTab(targetTabIndex),
+          requestContext: requestContext,
+          switchToTab: _shouldActivateAsyncResultTab(
+            requestContext.targetTabIndex,
+          ),
         );
         if (!cachedHit.envelope.isSoftExpired(DateTime.now())) {
           return;
         }
-        _markTabEntryLoading(targetTabIndex, preservePage: true);
+        _markTabEntryLoading(requestContext, preservePage: true);
         unawaited(
           _revalidateCachedPage(
             profileUri,
             key: key,
             cachedEntry: cachedHit.envelope,
-            targetTabIndex: targetTabIndex,
+            requestContext: requestContext.copyWith(
+              sourceKind: NavigationRequestSourceKind.revalidate,
+            ),
           ),
         );
         return;
@@ -1978,54 +2161,58 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       final EasyCopyPage profilePage = await _pageRepository.loadFresh(
         profileUri,
         authScope: key.authScope,
+        requestContext: requestContext,
       );
       _applyLoadedPage(
         profilePage,
-        targetTabIndex: targetTabIndex,
-        switchToTab: _shouldActivateAsyncResultTab(targetTabIndex),
+        requestContext: requestContext,
+        switchToTab: _shouldActivateAsyncResultTab(
+          requestContext.targetTabIndex,
+        ),
       );
     } catch (error) {
-      await _handlePageLoadFailure(
-        error,
-        targetTabIndex: targetTabIndex,
-        routeKey: key.routeKey,
-      );
+      await _handlePageLoadFailure(error, requestContext: requestContext);
     }
   }
 
   Future<void> _handlePageLoadFailure(
     Object error, {
-    required int targetTabIndex,
-    required String routeKey,
+    required NavigationRequestContext requestContext,
   }) async {
     if (error is SupersededPageLoadException) {
-      _finishMatchingRouteLoading(targetTabIndex, routeKey);
+      _finishMatchingRouteLoading(requestContext);
+      return;
+    }
+
+    if (!_canCommitRequest(requestContext)) {
+      _recordDiscardedNavigationMutation(
+        requestContext,
+        phase: 'page-load-failure',
+      );
       return;
     }
 
     final String message = error.toString();
     if (message.contains('登录已失效')) {
       await _logout(showFeedback: false);
-      if (targetTabIndex == _selectedIndex) {
+      if (requestContext.targetTabIndex == _selectedIndex) {
         _showSnackBar('登录已失效，请重新登录。');
       }
       return;
     }
 
     final PrimaryTabRouteEntry entry = _tabSessionStore.currentEntry(
-      targetTabIndex,
+      requestContext.targetTabIndex,
     );
     if (entry.page != null) {
-      _finishTabEntryLoading(targetTabIndex);
-      if (targetTabIndex == _selectedIndex) {
+      _finishTabEntryLoading(requestContext);
+      if (requestContext.targetTabIndex == _selectedIndex) {
         _showSnackBar(message);
       }
       return;
     }
 
-    _mutateSessionState(() {
-      _tabSessionStore.updateError(targetTabIndex, routeKey, message);
-    }, syncSearch: targetTabIndex == _selectedIndex);
+    _finishTabEntryLoading(requestContext, message: message);
   }
 
   Future<void> _retryCurrentPage() async {
@@ -2151,9 +2338,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
 
   Future<bool> _tryOpenCachedChapterReader(
     Uri targetUri, {
-    required int targetTabIndex,
-    required NavigationIntent historyMode,
-    required bool preserveVisiblePage,
+    required NavigationRequestContext requestContext,
     _CachedChapterNavigationContext context =
         const _CachedChapterNavigationContext(),
   }) async {
@@ -2169,18 +2354,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (cachedPage == null) {
       return false;
     }
-    final int preparedTabIndex = _prepareRouteEntry(
-      Uri.parse(cachedPage.uri),
-      targetTabIndex: targetTabIndex,
-      intent: historyMode,
-      preserveVisiblePage: preserveVisiblePage,
-    );
-    _applyLoadedPage(
+    return _applyLoadedPage(
       cachedPage,
-      targetTabIndex: preparedTabIndex,
+      requestContext: requestContext,
       switchToTab: true,
     );
-    return true;
   }
 
   void _openDetailChapter(DetailPageData page, String href) {
@@ -2386,6 +2564,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     await _hostManager.clearSessionPin();
     await _cookieManager.clearCookies();
     _mutateSessionState(() {
+      for (int index = 0; index < appDestinations.length; index += 1) {
+        _abandonCurrentRequest(index, phase: 'logout');
+      }
       _selectedIndex = 3;
       _tabSessionStore.resetToRoot(3);
       _tabSessionStore.updatePage(
@@ -2668,7 +2849,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         );
       });
     } else {
-      _finishTabEntryLoading(_selectedIndex);
+      _mutateSessionState(() {
+        _tabSessionStore.updateCurrent(
+          _selectedIndex,
+          (PrimaryTabRouteEntry entry) =>
+              entry.copyWith(isLoading: false, clearError: true),
+        );
+      });
       _showSnackBar(message);
     }
     if (_isFailingOver || _consecutiveFrameFailures < 2) {
