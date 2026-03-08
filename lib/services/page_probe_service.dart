@@ -66,8 +66,11 @@ class PageProbeService {
       return EasyCopyPageType.rank;
     }
     if (document.querySelector('.exemptComicList') != null ||
+        document.querySelector('.correlationList .exemptComic_Item') != null ||
         path.startsWith('/search') ||
-        path.startsWith('/comics')) {
+        path.startsWith('/comics') ||
+        path.startsWith('/recommend') ||
+        path.startsWith('/newest')) {
       return EasyCopyPageType.discover;
     }
     if (document.querySelector('.content-box .swiperList') != null ||
@@ -143,7 +146,9 @@ class PageProbeService {
     final String status = _infoValue(document, '狀態');
     final List<String> chapterLinks = document
         .querySelectorAll('a[href*="/chapter/"]')
-        .map((dom.Element anchor) => _absoluteUrl(uri, anchor.attributes['href']))
+        .map(
+          (dom.Element anchor) => _absoluteUrl(uri, anchor.attributes['href']),
+        )
         .where((String value) => value.isNotEmpty)
         .toList(growable: false);
     final String firstChapter = chapterLinks.isEmpty ? '' : chapterLinks.first;
@@ -184,11 +189,16 @@ class PageProbeService {
           final String containerTitle = _nodeText(
             container.querySelector('[title]'),
           );
-          final String title = (anchor.attributes['title']?.trim() ?? '')
-              .isNotEmpty
+          final String title =
+              (anchor.attributes['title']?.trim() ?? '').isNotEmpty
               ? anchor.attributes['title']!.trim()
-              : (containerTitle.isNotEmpty ? containerTitle : _nodeText(anchor));
-          final String href = _absoluteUrl(currentUri, anchor.attributes['href']);
+              : (containerTitle.isNotEmpty
+                    ? containerTitle
+                    : _nodeText(anchor));
+          final String href = _absoluteUrl(
+            currentUri,
+            anchor.attributes['href'],
+          );
           if (title.isEmpty && href.isEmpty) {
             return null;
           }
@@ -199,8 +209,9 @@ class PageProbeService {
   }
 
   String _infoValue(dom.Document document, String prefix) {
-    for (final dom.Element row
-        in document.querySelectorAll('.comicParticulars-title-right li')) {
+    for (final dom.Element row in document.querySelectorAll(
+      '.comicParticulars-title-right li',
+    )) {
       final String label = _nodeText(row.querySelector('span'));
       if (!label.startsWith(prefix)) {
         continue;
@@ -228,10 +239,7 @@ class PageProbeService {
 }
 
 class _CardFingerprint {
-  const _CardFingerprint({
-    required this.title,
-    required this.href,
-  });
+  const _CardFingerprint({required this.title, required this.href});
 
   final String title;
   final String href;

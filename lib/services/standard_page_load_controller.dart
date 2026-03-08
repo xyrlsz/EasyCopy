@@ -56,7 +56,11 @@ class StandardPageLoadHandle<T> {
           return true;
         }
         if (hasStartedAcceptedNavigation &&
-            tabIndexForUri(rewrittenUri) == targetTabIndex) {
+            resolveNavigationTabIndex(
+                  rewrittenUri,
+                  sourceTabIndex: targetTabIndex,
+                ) ==
+                targetTabIndex) {
           acceptedRouteKeys.add(routeKey);
           return true;
         }

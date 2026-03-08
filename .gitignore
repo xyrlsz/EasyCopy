@@ -40,6 +40,7 @@ verify_*.png
 flutter_run.log
 build_arm64.ps1
 build_apk_arm64_v8a.ps1
+package_release.ps1
 
 # Symbolication related
 app.*.symbols
@@ -48,6 +49,7 @@ app.*.symbols
 app.*.map.json
 release_output/
 release_symbols/
+release/
 
 # Android Studio will place build artifacts here
 /android/app/debug

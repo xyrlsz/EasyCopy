@@ -129,4 +129,48 @@ void main() {
     expect(entries[1].errorMessage, isNull);
     expect(entries[2].errorMessage, '加载失败');
   });
+
+  test(
+    'popToRoute drops nested reader history and restores the detail entry',
+    () {
+      final PrimaryTabSessionStore store = buildStore();
+
+      store.push(1, Uri.parse('https://example.com/comic/demo'));
+      store.push(1, Uri.parse('https://example.com/comic/demo/chapter/1'));
+      store.push(1, Uri.parse('https://example.com/comic/demo/chapter/2'));
+
+      final PrimaryTabRouteEntry? entry = store.popToRoute(
+        1,
+        Uri.parse('https://example.com/comic/demo'),
+      );
+
+      expect(entry?.uri, Uri.parse('https://example.com/comic/demo'));
+      expect(
+        store
+            .stackForTab(1)
+            .map((PrimaryTabRouteEntry item) => item.uri)
+            .toList(),
+        equals(<Uri>[
+          Uri.parse('https://example.com/comics'),
+          Uri.parse('https://example.com/comic/demo'),
+        ]),
+      );
+    },
+  );
+
+  test(
+    'detail and reader routes can stay in profile and rank source stacks',
+    () {
+      final PrimaryTabSessionStore store = buildStore();
+
+      store.push(3, Uri.parse('https://example.com/comic/demo'));
+      store.push(3, Uri.parse('https://example.com/comic/demo/chapter/1'));
+
+      expect(store.pop(3)?.uri, Uri.parse('https://example.com/comic/demo'));
+      expect(store.pop(3)?.uri, Uri.parse('https://example.com/person/home'));
+
+      store.push(2, Uri.parse('https://example.com/comic/demo'));
+      expect(store.pop(2)?.uri, Uri.parse('https://example.com/rank'));
+    },
+  );
 }

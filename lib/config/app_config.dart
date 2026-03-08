@@ -22,7 +22,8 @@ class AppConfig {
     return hostManager.resolveNavigationUri(href, currentUri: currentUri);
   }
 
-  static Uri rewriteToCurrentHost(Uri uri) => hostManager.rewriteToCurrentHost(uri);
+  static Uri rewriteToCurrentHost(Uri uri) =>
+      hostManager.rewriteToCurrentHost(uri);
 
   static Uri get profileUri => resolvePath(profilePath);
 
@@ -46,11 +47,7 @@ class AppConfig {
     return hostManager.isAllowedNavigationUri(uri);
   }
 
-  static Uri buildSearchUri(
-    String query, {
-    int page = 1,
-    String qType = '',
-  }) {
+  static Uri buildSearchUri(String query, {int page = 1, String qType = ''}) {
     final String normalizedQuery = query.trim();
     final int normalizedPage = page < 1 ? 1 : page;
     final String normalizedQueryType = qType.trim();
@@ -122,4 +119,22 @@ int tabIndexForUri(Uri? uri) {
   }
 
   return 0;
+}
+
+int resolveNavigationTabIndex(Uri? uri, {int? sourceTabIndex}) {
+  if (uri == null) {
+    return 0;
+  }
+
+  final Uri normalizedUri = AppConfig.rewriteToCurrentHost(uri);
+  final String path = normalizedUri.path.toLowerCase();
+  if (sourceTabIndex != null) {
+    final bool isReaderRoute = path.contains('/chapter/');
+    final bool isDetailRoute =
+        path.startsWith('/comic/') && !path.contains('/chapter/');
+    if (isReaderRoute || isDetailRoute) {
+      return sourceTabIndex;
+    }
+  }
+  return tabIndexForUri(normalizedUri);
 }

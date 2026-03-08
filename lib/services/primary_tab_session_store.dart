@@ -119,6 +119,22 @@ class PrimaryTabSessionStore {
     return stack.last;
   }
 
+  PrimaryTabRouteEntry? popToRoute(int tabIndex, Uri uri) {
+    final List<PrimaryTabRouteEntry> stack = _stackFor(tabIndex);
+    final Uri normalizedUri = _normalizeSessionUri(uri);
+    final int index = stack.lastIndexWhere(
+      (PrimaryTabRouteEntry entry) => _sameRoute(entry.uri, normalizedUri),
+    );
+    if (index == -1) {
+      return null;
+    }
+    if (index == stack.length - 1) {
+      return stack.last;
+    }
+    stack.removeRange(index + 1, stack.length);
+    return stack.last;
+  }
+
   PrimaryTabRouteEntry resetToRoot(int tabIndex) {
     final List<PrimaryTabRouteEntry> stack = _stackFor(tabIndex);
     final Uri rootUri = _rootUriFor(tabIndex);

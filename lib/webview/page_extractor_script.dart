@@ -24,6 +24,8 @@ const String _pageExtractionScriptTemplate = r"""
     list
       .map((value) => cleanText(value))
       .filter((value) => value.length > 0);
+  const discoverComicSelector =
+    '.exemptComic-box a[href*="/comic/"], .correlationList a[href*="/comic/"]';
   const absoluteUrl = (value) => {
     const next = cleanText(value);
     if (!next || next === '#') {
@@ -173,7 +175,7 @@ const String _pageExtractionScriptTemplate = r"""
             ? document.querySelector(target)
             : null;
         const chapters = pane ? collectChapterLinks(pane) : [];
-        if (chapters.length === 0) {
+        if (!pane && chapters.length === 0) {
           return null;
         }
         return {
@@ -235,7 +237,14 @@ const String _pageExtractionScriptTemplate = r"""
     if (document.querySelector('.ranking-box')) {
       return 'rank';
     }
-    if (document.querySelector('.exemptComicList')) {
+    if (
+      document.querySelector('.exemptComicList') ||
+      document.querySelector('.correlationList .exemptComic_Item') ||
+      path.startsWith('/comics') ||
+      path.startsWith('/search') ||
+      path.startsWith('/recommend') ||
+      path.startsWith('/newest')
+    ) {
       return 'discover';
     }
     if (document.querySelector('.content-box .swiperList') || document.querySelector('.comicRank')) {
@@ -326,10 +335,7 @@ const String _pageExtractionScriptTemplate = r"""
     };
   };
   const buildDiscoverPayload = () => {
-    const items = collectComicCards(
-      document,
-      '.exemptComic-box a[href*="/comic/"]',
-    );
+    const items = collectComicCards(document, discoverComicSelector);
     const pager = document.querySelector('.page-all');
 
     return {
@@ -349,8 +355,12 @@ const String _pageExtractionScriptTemplate = r"""
           pager && pager.querySelectorAll('.page-total').length > 0
             ? text(pager.querySelectorAll('.page-total')[pager.querySelectorAll('.page-total').length - 1])
             : '',
-        prevHref: linkUrl(pager ? pager.querySelector('.prev a') : null),
-        nextHref: linkUrl(pager ? pager.querySelector('.next a') : null),
+        prevHref: linkUrl(
+          pager ? pager.querySelector('.prev a, .prev-all a') : null,
+        ),
+        nextHref: linkUrl(
+          pager ? pager.querySelector('.next a, .next-all a') : null,
+        ),
       },
     };
   };
@@ -412,6 +422,10 @@ const String _pageExtractionScriptTemplate = r"""
       ).map((author) => text(author)),
     ).join(' / ');
     const chapterGroups = parseDetailChapterGroups();
+    const groupedChapters = uniqueBy(
+      chapterGroups.flatMap((group) => group.chapters),
+      (chapter) => chapter.href,
+    );
     const fallbackChapters = collectChapterLinks(document);
 
     return {
@@ -436,13 +450,7 @@ const String _pageExtractionScriptTemplate = r"""
         document.querySelector('.comicParticulars-botton[href*="/chapter/"]'),
       ),
       chapterGroups,
-      chapters:
-        chapterGroups.length > 0
-          ? uniqueBy(
-              chapterGroups.flatMap((group) => group.chapters),
-              (chapter) => chapter.href,
-            )
-          : fallbackChapters,
+      chapters: groupedChapters.length > 0 ? groupedChapters : fallbackChapters,
     };
   };
   const buildReaderPayload = () => {
@@ -518,7 +526,7 @@ const String _pageExtractionScriptTemplate = r"""
 
     if (type === 'discover') {
       return (
-        document.querySelectorAll('.exemptComic-box a[href*="/comic/"]').length === 0 &&
+        document.querySelectorAll(discoverComicSelector).length === 0 &&
         state.attempts < 18
       );
     }

@@ -10,6 +10,7 @@ void main() {
   StandardPageLoadHandle<String> buildHandle(
     String uri, {
     required int loadId,
+    int? targetTabIndex,
   }) {
     final Uri parsedUri = Uri.parse(uri);
     return StandardPageLoadHandle<String>(
@@ -18,7 +19,7 @@ void main() {
       intent: NavigationIntent.preserve,
       preserveCurrentPage: false,
       loadId: loadId,
-      targetTabIndex: tabIndexForUri(parsedUri),
+      targetTabIndex: targetTabIndex ?? tabIndexForUri(parsedUri),
       completer: Completer<String>(),
     );
   }
@@ -166,6 +167,57 @@ void main() {
         load.accepts(
           redirectedUri,
           source: StandardPageLoadEventSource.payload,
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'detail redirects stay accepted when the detail route inherits a source tab',
+    () {
+      final StandardPageLoadHandle<String> load = buildHandle(
+        'https://www.2026copy.com/comic/demo',
+        loadId: 6,
+        targetTabIndex: 3,
+      );
+      final Uri requestedUri = Uri.parse('https://www.2026copy.com/comic/demo');
+      final Uri redirectedUri = Uri.parse(
+        'https://www.2026copy.com/comic/demo?page=1',
+      );
+
+      expect(
+        load.accepts(
+          requestedUri,
+          source: StandardPageLoadEventSource.navigationRequest,
+        ),
+        isTrue,
+      );
+      expect(
+        load.accepts(
+          requestedUri,
+          source: StandardPageLoadEventSource.pageStarted,
+        ),
+        isTrue,
+      );
+      expect(
+        load.accepts(
+          redirectedUri,
+          source: StandardPageLoadEventSource.urlChange,
+        ),
+        isTrue,
+      );
+      expect(
+        load.accepts(
+          redirectedUri,
+          source: StandardPageLoadEventSource.pageStarted,
+        ),
+        isTrue,
+      );
+      expect(
+        load.accepts(
+          redirectedUri,
+          source: StandardPageLoadEventSource.pageFinished,
         ),
         isTrue,
       );

@@ -105,6 +105,72 @@ void main() {
     expect(discover.fingerprint, endsWith('::21'));
   });
 
+  test(
+    'page probe treats recommend and newest routes as discover pages',
+    () async {
+      const String correlationHtml = '''
+<!DOCTYPE html>
+<html lang="zh-hant">
+  <head>
+    <title>編輯推薦 - 拷貝漫畫 拷贝漫画</title>
+  </head>
+  <body>
+    <div class="container correlationList">
+      <div class="row">
+        <div class="col-auto exemptComic_Item">
+          <a href="/comic/demo-a">
+            <img src="https://example.com/a.jpg" alt="">
+          </a>
+          <div class="exemptComicItem-txt-box">
+            <div class="threeLines" title="推薦作品A"></div>
+          </div>
+        </div>
+        <div class="col-auto exemptComic_Item">
+          <a href="/comic/demo-b">推薦作品B</a>
+        </div>
+      </div>
+    </div>
+    <ul class="page-all">
+      <li class="page-all-item active">
+        <a href="/recommend?offset=0">1</a>
+      </li>
+    </ul>
+  </body>
+</html>
+''';
+      final PageProbeService service = PageProbeService(
+        client: MockClient((http.Request request) async {
+          return http.Response.bytes(utf8.encode(correlationHtml), 200);
+        }),
+        now: () => DateTime(2026, 3, 6, 12),
+        userAgent: 'test-agent',
+      );
+
+      final PageProbeResult recommend = await service.probe(
+        Uri.parse('https://www.2026copy.com/recommend'),
+      );
+      final PageProbeResult newest = await service.probe(
+        Uri.parse('https://www.2026copy.com/newest'),
+      );
+
+      expect(recommend.pageType, EasyCopyPageType.discover);
+      expect(recommend.fingerprint, startsWith('/recommend::'));
+      expect(
+        recommend.fingerprint,
+        contains('https://www.2026copy.com/comic/demo-a'),
+      );
+      expect(recommend.fingerprint, endsWith('::2'));
+
+      expect(newest.pageType, EasyCopyPageType.discover);
+      expect(newest.fingerprint, startsWith('/newest::'));
+      expect(
+        newest.fingerprint,
+        contains('https://www.2026copy.com/comic/demo-b'),
+      );
+      expect(newest.fingerprint, endsWith('::2'));
+    },
+  );
+
   test('page probe fingerprints rank tabs and ranking cards', () async {
     final String rankHtml = await File(fixturePath('rank.html')).readAsString();
     final PageProbeService service = PageProbeService(

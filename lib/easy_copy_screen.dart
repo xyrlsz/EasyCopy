@@ -10,6 +10,7 @@ import 'package:easy_copy/models/page_models.dart';
 import 'package:easy_copy/page_transition_scope.dart';
 import 'package:easy_copy/services/app_preferences_controller.dart';
 import 'package:easy_copy/services/comic_download_service.dart';
+import 'package:easy_copy/services/display_mode_service.dart';
 import 'package:easy_copy/services/download_queue_store.dart';
 import 'package:easy_copy/services/host_manager.dart';
 import 'package:easy_copy/services/image_cache.dart';
@@ -31,6 +32,7 @@ import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 const Duration _pageFadeTransitionDuration = Duration(milliseconds: 200);
+const String _detailAllChapterTabKey = '__detail_all__';
 
 Widget _buildFadeSwitchTransition(Widget child, Animation<double> animation) {
   return FadeTransition(
@@ -48,7 +50,8 @@ class EasyCopyScreen extends StatefulWidget {
   State<EasyCopyScreen> createState() => _EasyCopyScreenState();
 }
 
-class _EasyCopyScreenState extends State<EasyCopyScreen> {
+class _EasyCopyScreenState extends State<EasyCopyScreen>
+    with WidgetsBindingObserver {
   static const List<DeviceOrientation> _defaultOrientations =
       <DeviceOrientation>[
         DeviceOrientation.portraitUp,
@@ -102,6 +105,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   bool _isReaderChapterControlsVisible = false;
   bool _readerPresentationSyncScheduled = false;
   bool _suspendStandardScrollTracking = false;
+  String _selectedDetailChapterTabKey = _detailAllChapterTabKey;
+  bool _isDetailChapterSortAscending = false;
+  String _detailChapterStateRouteKey = '';
   int _currentReaderPageIndex = 0;
   int _currentVisibleReaderImageIndex = 0;
   int? _batteryLevel;
@@ -112,16 +118,20 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   final Map<int, ScrollController> _readerPageScrollControllers =
       <int, ScrollController>{};
   final Map<int, GlobalKey> _readerImageItemKeys = <int, GlobalKey>{};
+  final Map<String, GlobalKey> _detailChapterItemKeys = <String, GlobalKey>{};
+  String _handledDetailAutoScrollSignature = '';
   StreamSubscription<int>? _batterySubscription;
   StreamSubscription<ReaderVolumeKeyAction>? _volumeKeySubscription;
   final StandardPageLoadController<EasyCopyPage> _standardPageLoadController =
       StandardPageLoadController<EasyCopyPage>();
   NavigationIntent? _nextFreshNavigationIntent;
   bool? _nextFreshPreserveCurrentPage;
+  int? _nextFreshTargetTabIndex;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _preferencesController =
         widget.preferencesController ?? AppPreferencesController.instance;
     _readerPageController = PageController();
@@ -148,12 +158,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       _volumeKeySubscription = _readerPlatformBridge.volumeKeyEventStream
           .listen(_handleReaderVolumeKeyAction);
     }
+    unawaited(DisplayModeService.requestHighRefreshRate());
     unawaited(_bootstrap());
     _syncSearchController();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _persistCurrentReaderProgress();
     _readerProgressDebounce?.cancel();
     _readerAutoTurnTimer?.cancel();
@@ -171,6 +183,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     _downloadQueueSnapshotNotifier.dispose();
     unawaited(_restoreDefaultReaderEnvironment());
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(DisplayModeService.requestHighRefreshRate());
+    }
   }
 
   PrimaryTabRouteEntry get _currentEntry =>
@@ -1375,11 +1394,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
 
   int _prepareRouteEntry(
     Uri uri, {
+    required int targetTabIndex,
     required NavigationIntent intent,
     required bool preserveVisiblePage,
   }) {
     final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
-    final int tabIndex = tabIndexForUri(targetUri);
+    final int tabIndex = targetTabIndex;
     final EasyCopyPage? preservedPage = preserveVisiblePage
         ? _tabSessionStore.currentEntry(tabIndex).page
         : null;
@@ -1464,6 +1484,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
     final int loadId = ++_activeLoadId;
     final bool preserveCurrentPage = _nextFreshPreserveCurrentPage ?? false;
+    final int targetTabIndex =
+        _nextFreshTargetTabIndex ?? resolveNavigationTabIndex(targetUri);
     final StandardPageLoadHandle<EasyCopyPage> pendingLoad =
         StandardPageLoadHandle<EasyCopyPage>(
           requestedUri: targetUri,
@@ -1471,11 +1493,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
           intent: _nextFreshNavigationIntent ?? NavigationIntent.preserve,
           preserveCurrentPage: preserveCurrentPage,
           loadId: loadId,
-          targetTabIndex: tabIndexForUri(targetUri),
+          targetTabIndex: targetTabIndex,
           completer: Completer<EasyCopyPage>(),
         );
     _nextFreshNavigationIntent = null;
     _nextFreshPreserveCurrentPage = null;
+    _nextFreshTargetTabIndex = null;
     _standardPageLoadController.begin(pendingLoad);
     await _syncSessionCookiesToCurrentHost();
     if (!_standardPageLoadController.isCurrent(pendingLoad)) {
@@ -1498,6 +1521,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }) {
     final Uri pageUri = AppConfig.rewriteToCurrentHost(Uri.parse(page.uri));
     final int tabIndex = targetTabIndex ?? tabIndexForUri(pageUri);
+    final EasyCopyPage? previousPage =
+        (switchToTab || tabIndex == _selectedIndex) ? _page : null;
     final String? previousReaderUri =
         tabIndex == _selectedIndex && _page is ReaderPageData
         ? (_page as ReaderPageData).uri
@@ -1508,6 +1533,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         _selectedIndex = tabIndex;
       }
       _tabSessionStore.updatePage(tabIndex, page);
+      if (page is DetailPageData) {
+        _syncDetailChapterState(
+          page,
+          forceReset:
+              previousPage is! DetailPageData || previousPage.uri != page.uri,
+        );
+      }
     }, syncSearch: switchToTab || tabIndex == _selectedIndex);
     _scheduleReaderPresentationSync();
 
@@ -1557,12 +1589,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     bool bypassCache = false,
     bool preserveVisiblePage = false,
     NavigationIntent historyMode = NavigationIntent.push,
+    int? sourceTabIndex,
+    int? targetTabIndexOverride,
     _CachedChapterNavigationContext cachedChapterContext =
         const _CachedChapterNavigationContext(),
   }) async {
     _persistVisiblePageState();
     await _hostManager.ensureInitialized();
     final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
+    final int resolvedTargetTabIndex =
+        targetTabIndexOverride ??
+        resolveNavigationTabIndex(targetUri, sourceTabIndex: sourceTabIndex);
     final PageQueryKey key = _pageQueryKeyForUri(targetUri);
     if (!bypassCache &&
         !preserveVisiblePage &&
@@ -1595,6 +1632,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     if (_isReaderChapterUri(targetUri)) {
       final bool openedFromCache = await _tryOpenCachedChapterReader(
         targetUri,
+        targetTabIndex: resolvedTargetTabIndex,
         historyMode: historyMode,
         preserveVisiblePage: preserveVisiblePage,
         context: cachedChapterContext,
@@ -1607,35 +1645,39 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     _consecutiveFrameFailures = 0;
     final int targetTabIndex = _prepareRouteEntry(
       targetUri,
+      targetTabIndex: resolvedTargetTabIndex,
       intent: historyMode,
       preserveVisiblePage: preserveVisiblePage,
     );
     if (!bypassCache) {
       final CachedPageHit? cachedHit = await _pageRepository.readCached(key);
       if (cachedHit != null) {
-        _applyLoadedPage(
-          cachedHit.page,
-          targetTabIndex: targetTabIndex,
-          switchToTab: true,
-        );
-        if (!cachedHit.envelope.isSoftExpired(DateTime.now())) {
+        if (!_shouldBypassUnknownCache(targetUri, cachedHit.page)) {
+          _applyLoadedPage(
+            cachedHit.page,
+            targetTabIndex: targetTabIndex,
+            switchToTab: true,
+          );
+          if (!cachedHit.envelope.isSoftExpired(DateTime.now())) {
+            return;
+          }
+          _markTabEntryLoading(targetTabIndex, preservePage: true);
+          unawaited(
+            _revalidateCachedPage(
+              targetUri,
+              key: key,
+              cachedEntry: cachedHit.envelope,
+              targetTabIndex: targetTabIndex,
+            ),
+          );
           return;
         }
-        _markTabEntryLoading(targetTabIndex, preservePage: true);
-        unawaited(
-          _revalidateCachedPage(
-            targetUri,
-            key: key,
-            cachedEntry: cachedHit.envelope,
-            targetTabIndex: targetTabIndex,
-          ),
-        );
-        return;
       }
     }
 
     _nextFreshNavigationIntent = historyMode;
     _nextFreshPreserveCurrentPage = preserveVisiblePage;
+    _nextFreshTargetTabIndex = targetTabIndex;
     try {
       await _pageRepository.loadFresh(targetUri, authScope: key.authScope);
     } catch (error) {
@@ -1647,7 +1689,24 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     } finally {
       _nextFreshNavigationIntent = null;
       _nextFreshPreserveCurrentPage = null;
+      _nextFreshTargetTabIndex = null;
     }
+  }
+
+  bool _shouldBypassUnknownCache(Uri uri, EasyCopyPage page) {
+    if (page is! UnknownPageData) {
+      return false;
+    }
+    final String path = uri.path.toLowerCase();
+    return path == '/' ||
+        path.startsWith('/comics') ||
+        path.startsWith('/search') ||
+        path.startsWith('/rank') ||
+        path.startsWith('/recommend') ||
+        path.startsWith('/newest') ||
+        path.startsWith('/comic/') ||
+        path.startsWith('/person') ||
+        path.startsWith('/web/login');
   }
 
   _CachedChapterNavigationContext _resolvedCachedChapterContext(
@@ -1698,6 +1757,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }) async {
     try {
       _nextFreshPreserveCurrentPage = true;
+      _nextFreshTargetTabIndex = targetTabIndex;
       await _pageRepository.revalidate(uri, key: key, envelope: cachedEntry);
       final PrimaryTabRouteEntry entry = _tabSessionStore.currentEntry(
         targetTabIndex,
@@ -1721,6 +1781,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       _finishMatchingRouteLoading(targetTabIndex, key.routeKey);
     } finally {
       _nextFreshPreserveCurrentPage = null;
+      _nextFreshTargetTabIndex = null;
     }
   }
 
@@ -1734,8 +1795,10 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       _resetStandardScrollPosition();
     }
     final Uri profileUri = AppConfig.profileUri;
+    const int profileTabIndex = 3;
     final int targetTabIndex = _prepareRouteEntry(
       profileUri,
+      targetTabIndex: profileTabIndex,
       intent: historyMode,
       preserveVisiblePage: preserveVisiblePage,
     );
@@ -1831,6 +1894,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       _currentUri,
       bypassCache: true,
       preserveVisiblePage: _page != null,
+      sourceTabIndex: _selectedIndex,
       historyMode: NavigationIntent.preserve,
     );
   }
@@ -1869,8 +1933,10 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     );
   }
 
-  void _navigateToHref(String href) {
-    unawaited(_openHref(href));
+  void _navigateToHref(String href, {int? sourceTabIndex}) {
+    unawaited(
+      _openHref(href, sourceTabIndex: sourceTabIndex ?? _selectedIndex),
+    );
   }
 
   Future<void> _openHref(
@@ -1878,6 +1944,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     String prevHref = '',
     String nextHref = '',
     String catalogHref = '',
+    int? sourceTabIndex,
     NavigationIntent historyMode = NavigationIntent.push,
   }) async {
     if (href.trim().isEmpty) {
@@ -1893,6 +1960,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     }
     await _loadUri(
       targetUri,
+      sourceTabIndex: sourceTabIndex ?? _selectedIndex,
       historyMode: historyMode,
       cachedChapterContext: _CachedChapterNavigationContext(
         prevHref: prevHref,
@@ -1908,6 +1976,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
 
   Future<bool> _tryOpenCachedChapterReader(
     Uri targetUri, {
+    required int targetTabIndex,
     required NavigationIntent historyMode,
     required bool preserveVisiblePage,
     _CachedChapterNavigationContext context =
@@ -1925,14 +1994,15 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     if (cachedPage == null) {
       return false;
     }
-    final int targetTabIndex = _prepareRouteEntry(
+    final int preparedTabIndex = _prepareRouteEntry(
       Uri.parse(cachedPage.uri),
+      targetTabIndex: targetTabIndex,
       intent: historyMode,
       preserveVisiblePage: preserveVisiblePage,
     );
     _applyLoadedPage(
       cachedPage,
-      targetTabIndex: targetTabIndex,
+      targetTabIndex: preparedTabIndex,
       switchToTab: true,
     );
     return true;
@@ -1957,6 +2027,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
   }
 
   List<ChapterData> _detailChapterList(DetailPageData page) {
+    if (page.chapters.isNotEmpty) {
+      return page.chapters;
+    }
     if (page.chapterGroups.isNotEmpty) {
       return page.chapterGroups
           .expand((ChapterGroupData group) => group.chapters)
@@ -2194,6 +2267,10 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
 
   Future<void> _handleBackNavigation() async {
     _persistVisiblePageState();
+    final EasyCopyPage? page = _page;
+    if (page is ReaderPageData && await _handleReaderBackNavigation(page)) {
+      return;
+    }
     final PrimaryTabRouteEntry? previousEntry = _tabSessionStore.pop(
       _selectedIndex,
     );
@@ -2201,6 +2278,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       await _loadUri(
         previousEntry.uri,
         preserveVisiblePage: _page != null,
+        sourceTabIndex: _selectedIndex,
         historyMode: NavigationIntent.preserve,
       );
       return;
@@ -2210,6 +2288,34 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       return;
     }
     await SystemNavigator.pop();
+  }
+
+  Future<bool> _handleReaderBackNavigation(ReaderPageData page) async {
+    final String catalogHref = page.catalogHref.trim();
+    if (catalogHref.isEmpty) {
+      return false;
+    }
+    final Uri catalogUri = AppConfig.resolveNavigationUri(
+      catalogHref,
+      currentUri: Uri.parse(page.uri),
+    );
+    final PrimaryTabRouteEntry? existingCatalogEntry = _tabSessionStore
+        .popToRoute(_selectedIndex, catalogUri);
+    if (existingCatalogEntry != null) {
+      await _loadUri(
+        existingCatalogEntry.uri,
+        preserveVisiblePage: existingCatalogEntry.page != null,
+        sourceTabIndex: _selectedIndex,
+        historyMode: NavigationIntent.preserve,
+      );
+      return true;
+    }
+    await _loadUri(
+      catalogUri,
+      sourceTabIndex: _selectedIndex,
+      historyMode: NavigationIntent.preserve,
+    );
+    return true;
   }
 
   Future<void> _handleMainFrameFailure(String message) async {
@@ -2251,6 +2357,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       await _loadUri(
         AppConfig.rewriteToCurrentHost(_currentUri),
         preserveVisiblePage: _page != null,
+        sourceTabIndex: _selectedIndex,
         historyMode: NavigationIntent.preserve,
       );
       _consecutiveFrameFailures = 0;
@@ -2834,8 +2941,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         ),
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
         children: <Widget>[
-          _buildAnimatedSectionContent(
-            contentKey: _standardContentTransitionKey,
+          KeyedSubtree(
+            key: ValueKey<String>(_standardContentTransitionKey),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: _buildStandardBodyChildren(context),
@@ -3335,7 +3442,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
 
   List<_ChapterPickerSection> _chapterPickerSections(DetailPageData page) {
     if (page.chapterGroups.isNotEmpty) {
-      return page.chapterGroups
+      final List<_ChapterPickerSection> sections = page.chapterGroups
+          .where((ChapterGroupData group) => group.chapters.isNotEmpty)
           .map(
             (ChapterGroupData group) => _ChapterPickerSection(
               label: group.label,
@@ -3343,6 +3451,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
             ),
           )
           .toList(growable: false);
+      if (sections.isNotEmpty) {
+        return sections;
+      }
     }
     return <_ChapterPickerSection>[
       _ChapterPickerSection(label: '全部章节', chapters: page.chapters),
@@ -3702,6 +3813,250 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     ].join('::');
   }
 
+  void _syncDetailChapterState(DetailPageData page, {bool forceReset = false}) {
+    final String routeKey = AppConfig.routeKeyForUri(Uri.parse(page.uri));
+    final List<_DetailChapterTabData> tabs = _detailChapterTabs(page);
+    _DetailChapterTabData? fallbackTab;
+    for (final _DetailChapterTabData tab in tabs) {
+      if (tab.enabled) {
+        fallbackTab = tab;
+        break;
+      }
+    }
+    fallbackTab ??= tabs.isEmpty ? null : tabs.first;
+    final String? preferredTabKey = _preferredDetailChapterTabKey(page);
+    if (forceReset || _detailChapterStateRouteKey != routeKey) {
+      _detailChapterStateRouteKey = routeKey;
+      _detailChapterItemKeys.clear();
+      _handledDetailAutoScrollSignature = '';
+      _selectedDetailChapterTabKey =
+          preferredTabKey ?? fallbackTab?.key ?? _detailAllChapterTabKey;
+      _isDetailChapterSortAscending = false;
+      return;
+    }
+    if (!tabs.any(
+      (_DetailChapterTabData tab) =>
+          tab.key == _selectedDetailChapterTabKey && tab.enabled,
+    )) {
+      _selectedDetailChapterTabKey =
+          fallbackTab?.key ?? _detailAllChapterTabKey;
+    }
+  }
+
+  List<_DetailChapterTabData> _detailChapterTabs(DetailPageData page) {
+    final List<ChapterData> allChapters = _detailChapterList(page);
+    if (page.chapterGroups.isNotEmpty) {
+      final bool hasAllGroup = page.chapterGroups.any(
+        (ChapterGroupData group) => _isAllDetailChapterGroupLabel(group.label),
+      );
+      final List<_DetailChapterTabData> tabs = <_DetailChapterTabData>[
+        if (!hasAllGroup && allChapters.isNotEmpty)
+          _DetailChapterTabData(
+            key: _detailAllChapterTabKey,
+            label: '全部',
+            chapters: allChapters,
+          ),
+        for (int index = 0; index < page.chapterGroups.length; index += 1)
+          _DetailChapterTabData(
+            key: 'group:$index',
+            label: _detailChapterTabLabel(page.chapterGroups[index].label),
+            chapters:
+                _isAllDetailChapterGroupLabel(
+                      page.chapterGroups[index].label,
+                    ) &&
+                    page.chapterGroups[index].chapters.isEmpty &&
+                    allChapters.isNotEmpty
+                ? allChapters
+                : page.chapterGroups[index].chapters,
+          ),
+      ];
+      if (tabs.isNotEmpty) {
+        return tabs;
+      }
+    }
+    if (allChapters.isEmpty) {
+      return const <_DetailChapterTabData>[];
+    }
+    return <_DetailChapterTabData>[
+      _DetailChapterTabData(
+        key: _detailAllChapterTabKey,
+        label: '全部',
+        chapters: allChapters,
+      ),
+    ];
+  }
+
+  bool _isAllDetailChapterGroupLabel(String label) {
+    final String normalized = label.replaceAll(RegExp(r'\s+'), '');
+    return normalized.isNotEmpty &&
+        (normalized == '全部' || normalized.contains('全部'));
+  }
+
+  String _detailChapterTabLabel(String label) {
+    final String normalized = label.replaceAll(RegExp(r'\s+'), '');
+    if (normalized.isEmpty) {
+      return '列表';
+    }
+    if (_isAllDetailChapterGroupLabel(normalized)) {
+      return '全部';
+    }
+    if (normalized.contains('番外')) {
+      return '番外';
+    }
+    if (normalized.contains('單話') ||
+        normalized.contains('单话') ||
+        normalized == '話' ||
+        normalized.endsWith('話')) {
+      return '話';
+    }
+    if (normalized.contains('卷')) {
+      return '卷';
+    }
+    return label.trim();
+  }
+
+  _DetailChapterTabData? _activeDetailChapterTab(DetailPageData page) {
+    final List<_DetailChapterTabData> tabs = _detailChapterTabs(page);
+    if (tabs.isEmpty) {
+      return null;
+    }
+    for (final _DetailChapterTabData tab in tabs) {
+      if (tab.key == _selectedDetailChapterTabKey && tab.enabled) {
+        return tab;
+      }
+    }
+    for (final _DetailChapterTabData tab in tabs) {
+      if (tab.enabled) {
+        return tab;
+      }
+    }
+    return tabs.first;
+  }
+
+  List<ChapterData> _visibleDetailChapters(DetailPageData page) {
+    final _DetailChapterTabData? activeTab = _activeDetailChapterTab(page);
+    if (activeTab == null || activeTab.chapters.isEmpty) {
+      return const <ChapterData>[];
+    }
+    if (!_isDetailChapterSortAscending) {
+      return activeTab.chapters;
+    }
+    return activeTab.chapters.reversed.toList(growable: false);
+  }
+
+  String? _preferredDetailChapterTabKey(DetailPageData page) {
+    final String lastReadChapterPathKey = _lastReadChapterPathKeyForDetail(
+      page,
+    );
+    if (lastReadChapterPathKey.isEmpty) {
+      return null;
+    }
+    for (final _DetailChapterTabData tab in _detailChapterTabs(page)) {
+      if (!tab.enabled) {
+        continue;
+      }
+      if (tab.chapters.any(
+        (ChapterData chapter) =>
+            _chapterPathKey(chapter.href) == lastReadChapterPathKey,
+      )) {
+        return tab.key;
+      }
+    }
+    return null;
+  }
+
+  String _detailChapterContentKey(
+    DetailPageData page,
+    _DetailChapterTabData? activeTab,
+    List<ChapterData> chapters,
+  ) {
+    return <String>[
+      AppConfig.routeKeyForUri(Uri.parse(page.uri)),
+      activeTab?.key ?? 'empty',
+      _isDetailChapterSortAscending ? 'asc' : 'desc',
+      '${chapters.length}',
+      chapters.isEmpty ? '' : chapters.first.href,
+      chapters.isEmpty ? '' : chapters.last.href,
+    ].join('::');
+  }
+
+  void _selectDetailChapterTab(String key) {
+    if (!mounted || _selectedDetailChapterTabKey == key) {
+      return;
+    }
+    setState(() {
+      _selectedDetailChapterTabKey = key;
+    });
+  }
+
+  void _toggleDetailChapterSortOrder() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isDetailChapterSortAscending = !_isDetailChapterSortAscending;
+    });
+  }
+
+  GlobalKey _detailChapterItemKeyFor(String chapterPathKey) {
+    return _detailChapterItemKeys.putIfAbsent(chapterPathKey, GlobalKey.new);
+  }
+
+  void _scheduleDetailChapterAutoPosition(
+    DetailPageData page,
+    List<ChapterData> visibleChapters,
+    String lastReadChapterPathKey,
+  ) {
+    if (lastReadChapterPathKey.isEmpty) {
+      return;
+    }
+    final bool hasVisibleLastRead = visibleChapters.any(
+      (ChapterData chapter) =>
+          _chapterPathKey(chapter.href) == lastReadChapterPathKey,
+    );
+    if (!hasVisibleLastRead) {
+      return;
+    }
+    final String signature =
+        '${AppConfig.routeKeyForUri(Uri.parse(page.uri))}::$lastReadChapterPathKey';
+    if (_handledDetailAutoScrollSignature == signature) {
+      return;
+    }
+    _handledDetailAutoScrollSignature = signature;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureDetailChapterVisible(lastReadChapterPathKey, attempts: 12);
+    });
+  }
+
+  void _ensureDetailChapterVisible(
+    String chapterPathKey, {
+    required int attempts,
+  }) {
+    if (!mounted) {
+      return;
+    }
+    final BuildContext? targetContext =
+        _detailChapterItemKeys[chapterPathKey]?.currentContext;
+    if (targetContext == null) {
+      if (attempts > 0) {
+        Future<void>.delayed(
+          const Duration(milliseconds: 100),
+          () => _ensureDetailChapterVisible(
+            chapterPathKey,
+            attempts: attempts - 1,
+          ),
+        );
+      }
+      return;
+    }
+    Scrollable.ensureVisible(
+      targetContext,
+      alignment: 0.12,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
   List<Widget> _buildHomeSections(HomePageData page) {
     final List<Widget> sections = <Widget>[];
 
@@ -3960,6 +4315,16 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
     final String lastReadChapterPathKey = _lastReadChapterPathKeyForDetail(
       page,
     );
+    final List<_DetailChapterTabData> chapterTabs = _detailChapterTabs(page);
+    final _DetailChapterTabData? activeChapterTab = _activeDetailChapterTab(
+      page,
+    );
+    final List<ChapterData> visibleChapters = _visibleDetailChapters(page);
+    _scheduleDetailChapterAutoPosition(
+      page,
+      visibleChapters,
+      lastReadChapterPathKey,
+    );
     final List<Widget> sections = <Widget>[
       _DetailHeroCard(
         page: page,
@@ -4000,37 +4365,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
       sections.add(const SizedBox(height: 18));
     }
 
-    final List<Widget> chapterWidgets = <Widget>[];
-    if (page.chapterGroups.isNotEmpty) {
-      for (final ChapterGroupData group in page.chapterGroups) {
-        chapterWidgets.add(
-          Text(
-            group.label,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-          ),
-        );
-        chapterWidgets.add(const SizedBox(height: 12));
-        chapterWidgets.add(
-          _ChapterGrid(
-            chapters: group.chapters,
-            onTap: (String href) => _openDetailChapter(page, href),
-            downloadedChapterPathKeys: downloadedChapterKeys,
-            lastReadChapterPathKey: lastReadChapterPathKey,
-          ),
-        );
-        chapterWidgets.add(const SizedBox(height: 18));
-      }
-    } else if (page.chapters.isNotEmpty) {
-      chapterWidgets.add(
-        _ChapterGrid(
-          chapters: page.chapters,
-          onTap: (String href) => _openDetailChapter(page, href),
-          downloadedChapterPathKeys: downloadedChapterKeys,
-          lastReadChapterPathKey: lastReadChapterPathKey,
-        ),
-      );
-    }
-
     sections.add(
       _SurfaceBlock(
         title: '章節目錄',
@@ -4040,11 +4374,39 @@ class _EasyCopyScreenState extends State<EasyCopyScreen> {
         onActionTap: page.chapters.isNotEmpty || page.chapterGroups.isNotEmpty
             ? () => _showDetailDownloadPicker(page)
             : null,
-        child: chapterWidgets.isEmpty
+        child: chapterTabs.isEmpty
             ? const Text('章節還在整理中，向下刷新可重試。')
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: chapterWidgets,
+                children: <Widget>[
+                  _DetailChapterToolbar(
+                    tabs: chapterTabs,
+                    selectedKey: activeChapterTab?.key,
+                    isAscending: _isDetailChapterSortAscending,
+                    onSelectTab: _selectDetailChapterTab,
+                    onToggleSort: visibleChapters.length > 1
+                        ? _toggleDetailChapterSortOrder
+                        : null,
+                  ),
+                  const SizedBox(height: 14),
+                  if (visibleChapters.isEmpty)
+                    const Text('這個分組暫時沒有章節。')
+                  else
+                    _buildAnimatedSectionContent(
+                      contentKey: _detailChapterContentKey(
+                        page,
+                        activeChapterTab,
+                        visibleChapters,
+                      ),
+                      child: _ChapterGrid(
+                        chapters: visibleChapters,
+                        onTap: (String href) => _openDetailChapter(page, href),
+                        downloadedChapterPathKeys: downloadedChapterKeys,
+                        lastReadChapterPathKey: lastReadChapterPathKey,
+                        itemKeyBuilder: _detailChapterItemKeyFor,
+                      ),
+                    ),
+                ],
               ),
       ),
     );
@@ -4774,6 +5136,141 @@ class _SurfaceBlock extends StatelessWidget {
           ? TextButton(onPressed: onActionTap, child: Text(actionLabel!))
           : null,
       child: child,
+    );
+  }
+}
+
+class _DetailChapterToolbar extends StatelessWidget {
+  const _DetailChapterToolbar({
+    required this.tabs,
+    required this.selectedKey,
+    required this.isAscending,
+    required this.onSelectTab,
+    required this.onToggleSort,
+  });
+
+  final List<_DetailChapterTabData> tabs;
+  final String? selectedKey;
+  final bool isAscending;
+  final ValueChanged<String> onSelectTab;
+  final VoidCallback? onToggleSort;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: tabs
+                  .map(
+                    (_DetailChapterTabData tab) => Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: _DetailChapterControlChip(
+                        label: tab.label,
+                        active: tab.key == selectedKey,
+                        enabled: tab.enabled,
+                        onTap: tab.enabled ? () => onSelectTab(tab.key) : null,
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        _DetailChapterControlChip(
+          label: isAscending ? '正序' : '倒序',
+          icon: isAscending
+              ? Icons.arrow_upward_rounded
+              : Icons.arrow_downward_rounded,
+          active: onToggleSort != null,
+          enabled: onToggleSort != null,
+          onTap: onToggleSort,
+        ),
+      ],
+    );
+  }
+}
+
+class _DetailChapterControlChip extends StatelessWidget {
+  const _DetailChapterControlChip({
+    required this.label,
+    required this.active,
+    required this.enabled,
+    this.icon,
+    this.onTap,
+  });
+
+  final String label;
+  final bool active;
+  final bool enabled;
+  final IconData? icon;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final bool interactive = enabled && onTap != null;
+    final Color backgroundColor = !enabled
+        ? colorScheme.surfaceContainerLow
+        : active
+        ? colorScheme.primaryContainer.withValues(alpha: 0.78)
+        : colorScheme.surfaceContainerLowest;
+    final Color borderColor = !enabled
+        ? colorScheme.outlineVariant.withValues(alpha: 0.45)
+        : active
+        ? colorScheme.primary.withValues(alpha: 0.86)
+        : colorScheme.outlineVariant;
+    final Color foregroundColor = !enabled
+        ? colorScheme.onSurface.withValues(alpha: 0.42)
+        : active
+        ? colorScheme.onPrimaryContainer
+        : colorScheme.onSurface;
+
+    return Opacity(
+      opacity: enabled ? 1 : 0.72,
+      child: InkWell(
+        onTap: interactive ? onTap : null,
+        borderRadius: BorderRadius.circular(14),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: backgroundColor,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: borderColor),
+            boxShadow: active && enabled
+                ? <BoxShadow>[
+                    BoxShadow(
+                      color: colorScheme.primary.withValues(alpha: 0.14),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              if (icon != null) ...<Widget>[
+                Icon(icon, size: 14, color: foregroundColor),
+                const SizedBox(width: 6),
+              ],
+              Text(
+                label,
+                style: TextStyle(
+                  color: foregroundColor,
+                  fontSize: 12,
+                  fontWeight: active ? FontWeight.w800 : FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -5519,12 +6016,14 @@ class _ChapterGrid extends StatelessWidget {
     required this.onTap,
     this.downloadedChapterPathKeys = const <String>{},
     this.lastReadChapterPathKey = '',
+    this.itemKeyBuilder,
   });
 
   final List<ChapterData> chapters;
   final ValueChanged<String> onTap;
   final Set<String> downloadedChapterPathKeys;
   final String lastReadChapterPathKey;
+  final GlobalKey Function(String chapterPathKey)? itemKeyBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -5553,7 +6052,7 @@ class _ChapterGrid extends StatelessWidget {
         final bool isLastRead =
             lastReadChapterPathKey.isNotEmpty &&
             chapterPathKey == lastReadChapterPathKey;
-        return InkWell(
+        final Widget child = InkWell(
           onTap: () => onTap(chapter.href),
           borderRadius: BorderRadius.circular(18),
           child: Ink(
@@ -5634,6 +6133,10 @@ class _ChapterGrid extends StatelessWidget {
             ),
           ),
         );
+        final GlobalKey? itemKey = itemKeyBuilder?.call(chapterPathKey);
+        return itemKey == null
+            ? child
+            : KeyedSubtree(key: itemKey, child: child);
       },
     );
   }
@@ -5756,6 +6259,20 @@ class _ChapterPickerSection {
 
   final String label;
   final List<ChapterData> chapters;
+}
+
+class _DetailChapterTabData {
+  const _DetailChapterTabData({
+    required this.key,
+    required this.label,
+    required this.chapters,
+  });
+
+  final String key;
+  final String label;
+  final List<ChapterData> chapters;
+
+  bool get enabled => chapters.isNotEmpty;
 }
 
 class _AdjacentChapterLinks {

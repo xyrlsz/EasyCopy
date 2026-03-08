@@ -39,6 +39,46 @@ void main() {
     );
   });
 
+  test(
+    'resolveNavigationTabIndex lets detail and reader routes inherit source tabs',
+    () {
+      expect(
+        resolveNavigationTabIndex(
+          Uri.parse('https://www.2026copy.com/comic/demo'),
+          sourceTabIndex: 3,
+        ),
+        3,
+      );
+      expect(
+        resolveNavigationTabIndex(
+          Uri.parse('https://www.2026copy.com/comic/demo/chapter/1'),
+          sourceTabIndex: 2,
+        ),
+        2,
+      );
+      expect(
+        resolveNavigationTabIndex(
+          Uri.parse('https://www.2026copy.com/comics'),
+          sourceTabIndex: 3,
+        ),
+        1,
+      );
+      expect(
+        resolveNavigationTabIndex(
+          Uri.parse('https://www.2026copy.com/rank'),
+          sourceTabIndex: 1,
+        ),
+        2,
+      );
+      expect(
+        resolveNavigationTabIndex(
+          Uri.parse('https://www.2026copy.com/comic/demo'),
+        ),
+        1,
+      );
+    },
+  );
+
   test('buildSearchUri keeps page and q_type in search routes', () {
     expect(
       AppConfig.buildSearchUri('海贼王').toString(),
