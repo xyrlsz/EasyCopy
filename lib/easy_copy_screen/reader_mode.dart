@@ -507,10 +507,18 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
   ) {
     final bool showGap = _readerPreferences.showPageGap;
     final double topPadding = _readerPreferences.fullscreen && showGap ? 0 : 8;
+    final bool hasNextChapter = page.nextHref.trim().isNotEmpty;
     return RefreshIndicator(
       onRefresh: _retryCurrentPage,
       child: NotificationListener<ScrollNotification>(
-        onNotification: _handleReaderScrollNotification,
+        onNotification: (ScrollNotification notification) {
+          _handleReaderNextChapterPullNotification(
+            notification,
+            page: page,
+            controller: _readerScrollController,
+          );
+          return _handleReaderScrollNotification(notification);
+        },
         child: ListView.builder(
           key: ValueKey<String>(
             'reader-scroll-${page.uri}-${_readerPreferences.pageFit.name}-$showGap',
@@ -520,8 +528,11 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
             parent: BouncingScrollPhysics(),
           ),
           padding: EdgeInsets.only(top: topPadding, bottom: 16),
-          itemCount: page.imageUrls.length,
+          itemCount: page.imageUrls.length + (hasNextChapter ? 1 : 0),
           itemBuilder: (BuildContext context, int index) {
+            if (index >= page.imageUrls.length) {
+              return _buildReaderNextChapterFooter(context, page);
+            }
             return Padding(
               key: _readerImageItemKeyFor(index),
               padding: EdgeInsets.only(bottom: showGap ? 10 : 0),
@@ -546,21 +557,46 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
         ReaderReadingDirection.rightToLeft;
     final double topPadding =
         _readerPreferences.fullscreen && _readerPreferences.showPageGap ? 0 : 8;
+    final bool hasNextChapter = page.nextHref.trim().isNotEmpty;
     return NotificationListener<ScrollNotification>(
-      onNotification: _handleReaderScrollNotification,
+      onNotification: (ScrollNotification notification) {
+        final bool isLastReaderPage =
+            _currentReaderPageIndex >= page.imageUrls.length - 1;
+        if (isLastReaderPage && hasNextChapter) {
+          _handleReaderNextChapterPullNotification(
+            notification,
+            page: page,
+            controller: _readerPageController,
+            axis: Axis.horizontal,
+          );
+        }
+        return _handleReaderScrollNotification(notification);
+      },
       child: PageView.builder(
         key: ValueKey<String>(
           'reader-paged-${page.uri}-${_readerPreferences.readingDirection.name}-${_readerPreferences.pageFit.name}-${_readerPreferences.showPageGap}',
         ),
         controller: _readerPageController,
+        physics: const _ReaderPagedScrollPhysics(
+          triggerPageRatio: 0.65,
+          parent: BouncingScrollPhysics(),
+        ),
         reverse: reverse,
         itemCount: page.imageUrls.length,
         onPageChanged: _handleReaderPageChanged,
         itemBuilder: (BuildContext context, int index) {
           final ScrollController scrollController =
               _readerPageScrollControllerFor(index);
+          final bool isLastReaderPage = index == page.imageUrls.length - 1;
           return LayoutBuilder(
             builder: (BuildContext context, BoxConstraints constraints) {
+              final Widget pageBody = _buildReaderPagedPageBody(
+                context,
+                page: page,
+                imageUrl: page.imageUrls[index],
+                constraints: constraints,
+                showNextChapterFooter: isLastReaderPage && hasNextChapter,
+              );
               return Padding(
                 padding: _readerPreferences.showPageGap
                     ? EdgeInsets.only(top: topPadding, bottom: 8)
@@ -570,20 +606,7 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
                   child: SingleChildScrollView(
                     controller: scrollController,
                     physics: const BouncingScrollPhysics(),
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        minHeight: constraints.maxHeight,
-                      ),
-                      child: _buildReaderImageFrame(
-                        context,
-                        imageUrl: page.imageUrls[index],
-                        viewportHeight:
-                            _readerPreferences.pageFit ==
-                                ReaderPageFit.fitScreen
-                            ? constraints.maxHeight
-                            : null,
-                      ),
-                    ),
+                    child: pageBody,
                   ),
                 ),
               );
@@ -655,6 +678,164 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
     );
   }
 
+  Widget _buildReaderPagedPageBody(
+    BuildContext context, {
+    required ReaderPageData page,
+    required String imageUrl,
+    required BoxConstraints constraints,
+    required bool showNextChapterFooter,
+  }) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(minHeight: constraints.maxHeight),
+      child: Center(
+        child: SizedBox(
+          width: double.infinity,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              _buildReaderImageFrame(
+                context,
+                imageUrl: imageUrl,
+                viewportHeight:
+                    _readerPreferences.pageFit == ReaderPageFit.fitScreen
+                    ? constraints.maxHeight
+                    : null,
+              ),
+              if (showNextChapterFooter)
+                _buildReaderNextChapterFooter(context, page),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReaderNextChapterFooter(
+    BuildContext context,
+    ReaderPageData page,
+  ) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final bool isLoading = _isReaderNextChapterLoading;
+    final bool isReady = _readerNextChapterPullReady && !isLoading;
+    final Axis gestureAxis = _readerNextChapterGestureAxis;
+    final IconData directionIcon = switch ((
+      _readerPreferences.isPaged,
+      _readerPreferences.readingDirection,
+    )) {
+      (true, ReaderReadingDirection.leftToRight) =>
+        Icons.keyboard_double_arrow_left_rounded,
+      (true, ReaderReadingDirection.rightToLeft) =>
+        Icons.keyboard_double_arrow_right_rounded,
+      _ => Icons.keyboard_double_arrow_up_rounded,
+    };
+    final double progress =
+        (_readerNextChapterPullDistance / _readerNextChapterTriggerDistance)
+            .clamp(0, 1)
+            .toDouble();
+    final String title;
+    final String subtitle;
+    if (isLoading) {
+      title = '正在进入下一话';
+      subtitle = page.chapterTitle.isEmpty ? '请稍候' : page.chapterTitle;
+    } else if (isReady) {
+      title = '松手进入下一话';
+      subtitle = '已达到触发阈值';
+    } else {
+      title = switch ((
+        _readerPreferences.isPaged,
+        _readerPreferences.readingDirection,
+      )) {
+        (true, ReaderReadingDirection.leftToRight) => '继续向左滑，进入下一话',
+        (true, ReaderReadingDirection.rightToLeft) => '继续向右滑，进入下一话',
+        _ => '继续上拉，进入下一话',
+      };
+      subtitle = switch (gestureAxis) {
+        Axis.horizontal => '到末页后继续按翻页方向滑动即可自动切换',
+        Axis.vertical => '滑到底后继续上拉即可自动切换',
+      };
+    }
+    final Color backgroundColor = isLoading
+        ? colorScheme.primaryContainer
+        : isReady
+        ? colorScheme.secondaryContainer
+        : colorScheme.surfaceContainerHigh;
+    final Color foregroundColor = isLoading
+        ? colorScheme.onPrimaryContainer
+        : isReady
+        ? colorScheme.onSecondaryContainer
+        : colorScheme.onSurface;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: foregroundColor.withValues(alpha: 0.12)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  SizedBox.square(
+                    dimension: 24,
+                    child: isLoading
+                        ? CircularProgressIndicator(
+                            strokeWidth: 2.2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              foregroundColor,
+                            ),
+                          )
+                        : Icon(directionIcon, color: foregroundColor),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Text(
+                          title,
+                          style: TextStyle(
+                            color: foregroundColor,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle,
+                          style: TextStyle(
+                            color: foregroundColor.withValues(alpha: 0.72),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(999),
+                child: LinearProgressIndicator(
+                  minHeight: 6,
+                  value: isLoading ? null : progress,
+                  backgroundColor: foregroundColor.withValues(alpha: 0.12),
+                  valueColor: AlwaysStoppedAnimation<Color>(foregroundColor),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildReaderMode(BuildContext context, ReaderPageData page) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
     return AnimatedOpacity(
@@ -687,5 +868,86 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
         ),
       ),
     );
+  }
+}
+
+class _ReaderPagedScrollPhysics extends PageScrollPhysics {
+  const _ReaderPagedScrollPhysics({this.triggerPageRatio = 0.5, super.parent})
+    : assert(triggerPageRatio > 0 && triggerPageRatio < 1);
+
+  final double triggerPageRatio;
+
+  @override
+  _ReaderPagedScrollPhysics applyTo(ScrollPhysics? ancestor) {
+    return _ReaderPagedScrollPhysics(
+      triggerPageRatio: triggerPageRatio,
+      parent: buildParent(ancestor),
+    );
+  }
+
+  double _pageExtent(ScrollMetrics position) {
+    if (position is PageMetrics) {
+      return position.viewportDimension * position.viewportFraction;
+    }
+    return position.viewportDimension;
+  }
+
+  double _getPage(ScrollMetrics position) {
+    if (position is PageMetrics && position.page != null) {
+      return position.page!;
+    }
+    return position.pixels / _pageExtent(position);
+  }
+
+  double _getPixels(ScrollMetrics position, double page) {
+    return page * _pageExtent(position);
+  }
+
+  double _getTargetPixels(
+    ScrollMetrics position,
+    Tolerance tolerance,
+    double velocity,
+  ) {
+    double page = _getPage(position);
+    if (velocity < -tolerance.velocity) {
+      page -= triggerPageRatio;
+    } else if (velocity > tolerance.velocity) {
+      page += triggerPageRatio;
+    } else {
+      final double nearestPage = page.roundToDouble();
+      final double delta = page - nearestPage;
+      if (delta <= -triggerPageRatio) {
+        page = nearestPage - 1;
+      } else if (delta >= triggerPageRatio) {
+        page = nearestPage + 1;
+      } else {
+        page = nearestPage;
+      }
+      return _getPixels(position, page);
+    }
+    return _getPixels(position, page.roundToDouble());
+  }
+
+  @override
+  Simulation? createBallisticSimulation(
+    ScrollMetrics position,
+    double velocity,
+  ) {
+    if ((velocity <= 0.0 && position.pixels <= position.minScrollExtent) ||
+        (velocity >= 0.0 && position.pixels >= position.maxScrollExtent)) {
+      return super.createBallisticSimulation(position, velocity);
+    }
+    final Tolerance tolerance = toleranceFor(position);
+    final double target = _getTargetPixels(position, tolerance, velocity);
+    if (target != position.pixels) {
+      return ScrollSpringSimulation(
+        spring,
+        position.pixels,
+        target,
+        velocity,
+        tolerance: tolerance,
+      );
+    }
+    return null;
   }
 }

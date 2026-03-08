@@ -91,6 +91,14 @@ class LinkAction {
 
   bool get isNavigable => href.isNotEmpty;
 
+  LinkAction copyWith({String? label, String? href, bool? active}) {
+    return LinkAction(
+      label: label ?? this.label,
+      href: href ?? this.href,
+      active: active ?? this.active,
+    );
+  }
+
   Map<String, Object?> toJson() {
     return <String, Object?>{'label': label, 'href': href, 'active': active};
   }
@@ -216,6 +224,13 @@ class FilterGroupData {
 
   final String label;
   final List<LinkAction> options;
+
+  FilterGroupData copyWith({String? label, List<LinkAction>? options}) {
+    return FilterGroupData(
+      label: label ?? this.label,
+      options: options ?? this.options,
+    );
+  }
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
@@ -597,6 +612,24 @@ class DiscoverPageData extends EasyCopyPage {
   final List<ComicCardData> items;
   final PagerData pager;
   final List<ComicCardData> spotlight;
+
+  DiscoverPageData copyWith({
+    String? title,
+    String? uri,
+    List<FilterGroupData>? filters,
+    List<ComicCardData>? items,
+    PagerData? pager,
+    List<ComicCardData>? spotlight,
+  }) {
+    return DiscoverPageData(
+      title: title ?? this.title,
+      uri: uri ?? this.uri,
+      filters: filters ?? this.filters,
+      items: items ?? this.items,
+      pager: pager ?? this.pager,
+      spotlight: spotlight ?? this.spotlight,
+    );
+  }
 
   @override
   Map<String, Object?> toJson() {

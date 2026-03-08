@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:easy_copy/models/app_preferences.dart';
 import 'package:easy_copy/models/page_models.dart';
@@ -42,9 +44,9 @@ class ProfilePageView extends StatelessWidget {
   final List<String> candidateHosts;
   final HostProbeSnapshot? hostSnapshot;
   final bool isRefreshingHosts;
-  final VoidCallback? onRefreshHosts;
-  final VoidCallback? onUseAutomaticHostSelection;
-  final ValueChanged<String>? onSelectHost;
+  final FutureOr<void> Function()? onRefreshHosts;
+  final FutureOr<void> Function()? onUseAutomaticHostSelection;
+  final FutureOr<void> Function(String value)? onSelectHost;
   final AppThemePreference themePreference;
   final ValueChanged<AppThemePreference>? onThemePreferenceChanged;
   final Widget? afterContinueReading;
@@ -471,9 +473,9 @@ class _HostSettingsEntryCard extends StatelessWidget {
   final List<String> candidateHosts;
   final HostProbeSnapshot? snapshot;
   final bool isRefreshing;
-  final VoidCallback? onRefresh;
-  final VoidCallback? onUseAutomaticSelection;
-  final ValueChanged<String>? onSelectHost;
+  final FutureOr<void> Function()? onRefresh;
+  final FutureOr<void> Function()? onUseAutomaticSelection;
+  final FutureOr<void> Function(String value)? onSelectHost;
 
   @override
   Widget build(BuildContext context) {
@@ -536,7 +538,7 @@ String _formatCheckedAt(DateTime checkedAt) {
   return '$month-$day $hour:$minute';
 }
 
-class _HostSettingsPage extends StatelessWidget {
+class _HostSettingsPage extends StatefulWidget {
   const _HostSettingsPage({
     required this.currentHost,
     required this.candidateHosts,
@@ -551,26 +553,62 @@ class _HostSettingsPage extends StatelessWidget {
   final List<String> candidateHosts;
   final HostProbeSnapshot? snapshot;
   final bool isRefreshing;
-  final VoidCallback? onRefresh;
-  final VoidCallback? onUseAutomaticSelection;
-  final ValueChanged<String>? onSelectHost;
+  final FutureOr<void> Function()? onRefresh;
+  final FutureOr<void> Function()? onUseAutomaticSelection;
+  final FutureOr<void> Function(String value)? onSelectHost;
+
+  @override
+  State<_HostSettingsPage> createState() => _HostSettingsPageState();
+}
+
+class _HostSettingsPageState extends State<_HostSettingsPage> {
+  static const Object _snapshotSentinel = Object();
+
+  late String _currentHost;
+  late HostProbeSnapshot? _snapshot;
+  late bool _isRefreshing;
+  bool _isBusy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentHost = _normalizeHostValue(widget.currentHost);
+    _snapshot = _normalizeSnapshot(widget.snapshot);
+    _isRefreshing = widget.isRefreshing;
+  }
+
+  @override
+  void didUpdateWidget(covariant _HostSettingsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_isBusy) {
+      return;
+    }
+    if (oldWidget.currentHost != widget.currentHost ||
+        oldWidget.snapshot != widget.snapshot) {
+      _currentHost = _normalizeHostValue(widget.currentHost);
+      _snapshot = _normalizeSnapshot(widget.snapshot);
+    }
+    if (oldWidget.isRefreshing != widget.isRefreshing) {
+      _isRefreshing = widget.isRefreshing;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final String normalizedCurrentHost = currentHost.trim().toLowerCase();
-    final String? pinnedHost = snapshot?.sessionPinnedHost
+    final String normalizedCurrentHost = _currentHost;
+    final String? pinnedHost = _snapshot?.sessionPinnedHost
         ?.trim()
         .toLowerCase();
     final String recommendedHost =
-        snapshot?.selectedHost.trim().toLowerCase() ?? '';
+        _snapshot?.selectedHost.trim().toLowerCase() ?? '';
     final Map<String, HostProbeRecord> probes = <String, HostProbeRecord>{
       for (final HostProbeRecord probe
-          in snapshot?.probes ?? const <HostProbeRecord>[])
+          in _snapshot?.probes ?? const <HostProbeRecord>[])
         probe.host.trim().toLowerCase(): probe,
     };
     final Set<String> seenHosts = <String>{};
     final List<String> hosts = <String>[
-      for (final String rawHost in candidateHosts)
+      for (final String rawHost in widget.candidateHosts)
         if (rawHost.trim().isNotEmpty &&
             seenHosts.add(rawHost.trim().toLowerCase()))
           rawHost.trim().toLowerCase(),
@@ -578,7 +616,7 @@ class _HostSettingsPage extends StatelessWidget {
           seenHosts.add(normalizedCurrentHost))
         normalizedCurrentHost,
       for (final HostProbeRecord probe
-          in snapshot?.probes ?? const <HostProbeRecord>[])
+          in _snapshot?.probes ?? const <HostProbeRecord>[])
         if (probe.host.trim().isNotEmpty &&
             seenHosts.add(probe.host.trim().toLowerCase()))
           probe.host.trim().toLowerCase(),
@@ -612,18 +650,18 @@ class _HostSettingsPage extends StatelessWidget {
                               label: '模式',
                               value: pinnedHost == null ? '自动选择' : '手动锁定',
                             ),
-                            if (snapshot != null)
+                            if (_snapshot != null)
                               _HostSummaryChip(
                                 label: '最近测速',
-                                value: _formatCheckedAt(snapshot!.checkedAt),
+                                value: _formatCheckedAt(_snapshot!.checkedAt),
                               ),
                           ],
                         ),
                       ),
                       const SizedBox(width: 12),
                       FilledButton.tonalIcon(
-                        onPressed: isRefreshing ? null : onRefresh,
-                        icon: isRefreshing
+                        onPressed: _isBusy ? null : _handleRefresh,
+                        icon: _isRefreshing
                             ? const SizedBox(
                                 width: 16,
                                 height: 16,
@@ -632,7 +670,7 @@ class _HostSettingsPage extends StatelessWidget {
                                 ),
                               )
                             : const Icon(Icons.speed_rounded),
-                        label: Text(isRefreshing ? '测速中' : '重新测速'),
+                        label: Text(_isRefreshing ? '测速中' : '重新测速'),
                       ),
                     ],
                   ),
@@ -649,10 +687,10 @@ class _HostSettingsPage extends StatelessWidget {
                     ),
                   ),
                   if (pinnedHost != null &&
-                      onUseAutomaticSelection != null) ...<Widget>[
+                      widget.onUseAutomaticSelection != null) ...<Widget>[
                     const SizedBox(height: 12),
                     FilledButton.tonalIcon(
-                      onPressed: isRefreshing ? null : onUseAutomaticSelection,
+                      onPressed: _isBusy ? null : _handleUseAutomaticSelection,
                       icon: const Icon(Icons.auto_mode_rounded),
                       label: const Text('恢复自动选择'),
                     ),
@@ -688,10 +726,10 @@ class _HostSettingsPage extends StatelessWidget {
                                 recommendedHost.isNotEmpty &&
                                 host == recommendedHost &&
                                 host != normalizedCurrentHost,
-                            enabled: !isRefreshing && onSelectHost != null,
-                            onTap: onSelectHost == null
+                            enabled: !_isBusy && widget.onSelectHost != null,
+                            onTap: widget.onSelectHost == null
                                 ? null
-                                : () => onSelectHost!(host),
+                                : () => _handleSelectHost(host),
                           ),
                         ),
                       )
@@ -702,6 +740,200 @@ class _HostSettingsPage extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _normalizeHostValue(String value) {
+    return value.trim().toLowerCase();
+  }
+
+  HostProbeSnapshot? _normalizeSnapshot(HostProbeSnapshot? snapshot) {
+    if (snapshot == null) {
+      return null;
+    }
+    return HostProbeSnapshot(
+      selectedHost: _normalizeHostValue(snapshot.selectedHost),
+      checkedAt: snapshot.checkedAt,
+      probes: snapshot.probes,
+      sessionPinnedHost: snapshot.sessionPinnedHost == null
+          ? null
+          : _normalizeHostValue(snapshot.sessionPinnedHost!),
+    );
+  }
+
+  Set<String> _knownHosts() {
+    return <String>{
+      if (_currentHost.isNotEmpty) _currentHost,
+      for (final String host in widget.candidateHosts)
+        if (_normalizeHostValue(host).isNotEmpty) _normalizeHostValue(host),
+      for (final HostProbeRecord probe
+          in _snapshot?.probes ?? const <HostProbeRecord>[])
+        if (_normalizeHostValue(probe.host).isNotEmpty)
+          _normalizeHostValue(probe.host),
+    };
+  }
+
+  HostProbeSnapshot? _copySnapshot({
+    String? selectedHost,
+    Object? pinnedHost = _snapshotSentinel,
+    DateTime? checkedAt,
+  }) {
+    final HostProbeSnapshot? snapshot = _snapshot;
+    final String resolvedSelectedHost = _normalizeHostValue(
+      selectedHost ?? snapshot?.selectedHost ?? _currentHost,
+    );
+    final String? resolvedPinnedHost = switch (pinnedHost) {
+      String value => _normalizeHostValue(value),
+      null => null,
+      _ =>
+        snapshot?.sessionPinnedHost == null
+            ? null
+            : _normalizeHostValue(snapshot!.sessionPinnedHost!),
+    };
+    if (snapshot == null &&
+        resolvedSelectedHost.isEmpty &&
+        resolvedPinnedHost == null) {
+      return null;
+    }
+    return HostProbeSnapshot(
+      selectedHost: resolvedSelectedHost,
+      checkedAt: checkedAt ?? snapshot?.checkedAt ?? DateTime.now(),
+      probes: snapshot?.probes ?? const <HostProbeRecord>[],
+      sessionPinnedHost: resolvedPinnedHost,
+    );
+  }
+
+  void _syncFromHostManager() {
+    final Set<String> knownHosts = _knownHosts();
+    final String managerCurrent = _normalizeHostValue(
+      HostManager.instance.currentHost,
+    );
+    final HostProbeSnapshot? managerSnapshot = _normalizeSnapshot(
+      HostManager.instance.probeSnapshot,
+    );
+    final bool canUseManagerCurrent =
+        managerCurrent.isNotEmpty && knownHosts.contains(managerCurrent);
+    final bool canUseManagerSnapshot =
+        managerSnapshot != null &&
+        (knownHosts.contains(managerSnapshot.selectedHost) ||
+            managerSnapshot.probes.any(
+              (HostProbeRecord probe) =>
+                  knownHosts.contains(_normalizeHostValue(probe.host)),
+            ));
+    if (!canUseManagerCurrent && !canUseManagerSnapshot) {
+      return;
+    }
+    _currentHost = canUseManagerCurrent ? managerCurrent : _currentHost;
+    _snapshot = canUseManagerSnapshot
+        ? managerSnapshot
+        : _copySnapshot(selectedHost: _currentHost);
+  }
+
+  Future<void> _runBusyAction(
+    Future<void> Function() action, {
+    bool refreshing = false,
+  }) async {
+    if (_isBusy) {
+      return;
+    }
+    setState(() {
+      _isBusy = true;
+      _isRefreshing = refreshing || widget.isRefreshing;
+    });
+    try {
+      await action();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isBusy = false;
+          _isRefreshing = false;
+        });
+      } else {
+        _isBusy = false;
+        _isRefreshing = false;
+      }
+    }
+  }
+
+  Future<void> _handleRefresh() async {
+    final FutureOr<void> Function()? onRefresh = widget.onRefresh;
+    if (onRefresh == null) {
+      return;
+    }
+    await _runBusyAction(() async {
+      await onRefresh();
+      _syncFromHostManager();
+    }, refreshing: true);
+  }
+
+  Future<void> _handleUseAutomaticSelection() async {
+    final FutureOr<void> Function()? onUseAutomaticSelection =
+        widget.onUseAutomaticSelection;
+    if (onUseAutomaticSelection == null) {
+      return;
+    }
+    final String previousCurrentHost = _currentHost;
+    final HostProbeSnapshot? previousSnapshot = _snapshot;
+    final String automaticHost = _normalizeHostValue(
+      _snapshot?.selectedHost ?? _currentHost,
+    );
+    setState(() {
+      if (automaticHost.isNotEmpty) {
+        _currentHost = automaticHost;
+      }
+      _snapshot = _copySnapshot(
+        selectedHost: automaticHost.isEmpty ? _currentHost : automaticHost,
+        pinnedHost: null,
+      );
+    });
+    await _runBusyAction(() async {
+      try {
+        await onUseAutomaticSelection();
+        _syncFromHostManager();
+      } catch (_) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _currentHost = previousCurrentHost;
+          _snapshot = previousSnapshot;
+        });
+      }
+    });
+  }
+
+  Future<void> _handleSelectHost(String host) async {
+    final FutureOr<void> Function(String value)? onSelectHost =
+        widget.onSelectHost;
+    if (onSelectHost == null) {
+      return;
+    }
+    final String normalizedHost = _normalizeHostValue(host);
+    if (normalizedHost.isEmpty) {
+      return;
+    }
+    final String previousCurrentHost = _currentHost;
+    final HostProbeSnapshot? previousSnapshot = _snapshot;
+    setState(() {
+      _currentHost = normalizedHost;
+      _snapshot = _copySnapshot(
+        selectedHost: normalizedHost,
+        pinnedHost: normalizedHost,
+      );
+    });
+    await _runBusyAction(() async {
+      try {
+        await onSelectHost(normalizedHost);
+        _syncFromHostManager();
+      } catch (_) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _currentHost = previousCurrentHost;
+          _snapshot = previousSnapshot;
+        });
+      }
+    });
   }
 }
 

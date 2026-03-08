@@ -10,7 +10,11 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
-  ReaderPageData buildReaderPage() {
+  ReaderPageData buildReaderPage({
+    String prevHref = '',
+    String nextHref = '',
+    String catalogHref = 'https://www.2026copy.com/comic/demo',
+  }) {
     return ReaderPageData(
       title: 'Chapter 1',
       uri: 'https://www.2026copy.com/comic/demo/chapter/1',
@@ -21,9 +25,9 @@ void main() {
         'https://cdn.example/chapter-1/001.jpg',
         'https://cdn.example/chapter-1/002.png',
       ],
-      prevHref: '',
-      nextHref: '',
-      catalogHref: 'https://www.2026copy.com/comic/demo',
+      prevHref: prevHref,
+      nextHref: nextHref,
+      catalogHref: catalogHref,
       contentKey: 'chapter-1',
     );
   }
@@ -147,7 +151,10 @@ void main() {
       );
 
       await service.downloadChapter(
-        buildReaderPage(),
+        buildReaderPage(
+          prevHref: 'https://www.2026copy.com/comic/demo/chapter/0',
+          nextHref: 'https://www.2026copy.com/comic/demo/chapter/2',
+        ),
         chapterLabel: 'Chapter 1',
         comicUri: 'https://www.2026copy.com/comic/demo',
         coverUrl: 'https://img.example/demo.jpg',
@@ -172,6 +179,47 @@ void main() {
         ),
         isTrue,
       );
+    },
+  );
+
+  test(
+    'loadCachedReaderPage falls back to manifest adjacent chapter links',
+    () async {
+      final Directory tempDir = await Directory.systemTemp.createTemp(
+        'easy_copy_cached_reader_manifest_links',
+      );
+      addTearDown(() => tempDir.delete(recursive: true));
+
+      final ComicDownloadService service = ComicDownloadService(
+        client: MockClient((http.Request request) async {
+          return http.Response.bytes(
+            utf8.encode('image:${request.url.pathSegments.last}'),
+            200,
+            headers: <String, String>{'content-type': 'image/jpeg'},
+          );
+        }),
+        baseDirectoryProvider: () async => tempDir,
+      );
+
+      await service.downloadChapter(
+        buildReaderPage(
+          prevHref: 'https://www.2026copy.com/comic/demo/chapter/0',
+          nextHref: 'https://www.2026copy.com/comic/demo/chapter/2',
+          catalogHref: 'https://www.2026copy.com/comic/demo',
+        ),
+        chapterLabel: 'Chapter 1',
+        comicUri: 'https://www.2026copy.com/comic/demo',
+        coverUrl: 'https://img.example/demo.jpg',
+      );
+
+      final ReaderPageData? cachedPage = await service.loadCachedReaderPage(
+        'https://www.2026copy.com/comic/demo/chapter/1',
+      );
+
+      expect(cachedPage, isNotNull);
+      expect(cachedPage?.prevHref, contains('/chapter/0'));
+      expect(cachedPage?.nextHref, contains('/chapter/2'));
+      expect(cachedPage?.catalogHref, contains('/comic/demo'));
     },
   );
 

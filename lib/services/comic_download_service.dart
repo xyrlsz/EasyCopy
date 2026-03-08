@@ -288,6 +288,9 @@ class ComicDownloadService {
         'chapterTitle': page.chapterTitle,
         'chapterLabel': resolvedChapterLabel,
         'chapterHref': resolvedChapterHref,
+        'prevHref': page.prevHref,
+        'nextHref': page.nextHref,
+        'catalogHref': page.catalogHref,
         'progressLabel': page.progressLabel,
         'sourceUri': page.uri,
         'downloadedAt': DateTime.now().toIso8601String(),
@@ -497,9 +500,19 @@ class ComicDownloadService {
           : (manifestChapterHref.isNotEmpty
                 ? _rewriteAllowedUri(manifestChapterHref)
                 : _rewriteAllowedUri(chapterHref));
+      final String resolvedPrevHref = prevHref.trim().isNotEmpty
+          ? _rewriteAllowedUri(prevHref)
+          : _rewriteAllowedUri(_stringValue(manifest['prevHref']));
+      final String resolvedNextHref = nextHref.trim().isNotEmpty
+          ? _rewriteAllowedUri(nextHref)
+          : _rewriteAllowedUri(_stringValue(manifest['nextHref']));
       final String resolvedCatalogHref = catalogHref.trim().isNotEmpty
           ? catalogHref.trim()
-          : _rewriteAllowedUri(_stringValue(manifest['comicUri']));
+          : _rewriteAllowedUri(
+              _stringValue(manifest['catalogHref']).isNotEmpty
+                  ? _stringValue(manifest['catalogHref'])
+                  : _stringValue(manifest['comicUri']),
+            );
       final String chapterTitle = _stringValue(manifest['chapterTitle']);
       final String chapterLabel = _stringValue(manifest['chapterLabel']);
       final String progressLabel = _stringValue(manifest['progressLabel']);
@@ -513,8 +526,8 @@ class ComicDownloadService {
         chapterTitle: chapterTitle.isNotEmpty ? chapterTitle : chapterLabel,
         progressLabel: progressLabel,
         imageUrls: imageUrls,
-        prevHref: _rewriteAllowedUri(prevHref),
-        nextHref: _rewriteAllowedUri(nextHref),
+        prevHref: resolvedPrevHref,
+        nextHref: resolvedNextHref,
         catalogHref: resolvedCatalogHref,
         contentKey: _pathKeyForUri(resolvedUri),
       );

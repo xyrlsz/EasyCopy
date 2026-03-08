@@ -149,6 +149,10 @@ const String _pageExtractionScriptTemplate = r"""
         .filter((chapter) => !chapter.label.includes('開始閱讀')),
       (chapter) => chapter.href,
     );
+  const uniqueStrings = (items) =>
+    Array.from(
+      new Set(items.map((value) => cleanText(value)).filter((value) => value)),
+    );
   const infoValue = (prefix, rowFactory) => {
     const row = rowFactory(prefix);
     if (!row) {
@@ -166,26 +170,129 @@ const String _pageExtractionScriptTemplate = r"""
     );
   };
   const parseDetailChapterGroups = () => {
-    const tabAnchors = Array.from(document.querySelectorAll('.nav-tabs a'));
-    const groups = tabAnchors
-      .map((tabAnchor, index) => {
-        const target = attr(tabAnchor, 'href');
-        const pane =
-          target && target.startsWith('#')
-            ? document.querySelector(target)
-            : null;
-        const chapters = pane ? collectChapterLinks(pane) : [];
-        if (!pane && chapters.length === 0) {
-          return null;
-        }
-        return {
-          label: text(tabAnchor) || `列表 ${index + 1}`,
-          chapters,
-        };
-      })
-      .filter((value) => value);
+    const isLikelyChapterGroupLabel = (label) => {
+      const normalized = cleanText(label).replace(/\s+/g, '');
+      return (
+        !!normalized &&
+        (normalized === '全部' ||
+          normalized.includes('全部') ||
+          normalized.includes('番外') ||
+          normalized.includes('單話') ||
+          normalized.includes('单话') ||
+          normalized === '話' ||
+          normalized.endsWith('話') ||
+          normalized.includes('卷') ||
+          normalized.includes('單行本') ||
+          normalized.includes('单行本'))
+      );
+    };
+    const normalizeTarget = (value) => {
+      const normalized = cleanText(value);
+      if (!normalized) {
+        return '';
+      }
+      if (normalized.startsWith('#')) {
+        return normalized;
+      }
+      if (
+        normalized.includes('/') ||
+        normalized.includes(':') ||
+        normalized.includes('?')
+      ) {
+        return '';
+      }
+      return `#${normalized.replace(/^#/, '')}`;
+    };
+    const controlTargets = (node) =>
+      uniqueStrings([
+        normalizeTarget(attr(node, 'href')),
+        normalizeTarget(attr(node, 'data-target')),
+        normalizeTarget(attr(node, 'data-bs-target')),
+        normalizeTarget(attr(node, 'aria-controls')),
+      ]).filter((target) => target.startsWith('#'));
+    const controls = uniqueBy(
+      Array.from(
+        document.querySelectorAll(
+          '.nav-tabs a, .nav-tabs button, a[data-toggle="tab"], button[data-toggle="tab"], a[data-bs-toggle="tab"], button[data-bs-toggle="tab"], [role="tab"]',
+        ),
+      )
+        .map((control, index) => ({
+          label: text(control) || `列表 ${index + 1}`,
+          targets: controlTargets(control),
+          index,
+        }))
+        .filter(
+          (control) =>
+            control.targets.length > 0 || isLikelyChapterGroupLabel(control.label),
+        ),
+      (control) => `${control.label}::${control.targets.join('|')}`,
+    );
+    const panes = Array.from(
+      document.querySelectorAll('.tab-pane, .tab-content [role="tabpanel"]'),
+    )
+      .map((pane, index) => ({
+        target: normalizeTarget(attr(pane, 'id')),
+        labelledBy: normalizeTarget(attr(pane, 'aria-labelledby')),
+        chapters: collectChapterLinks(pane),
+        index,
+      }))
+      .filter(
+        (pane) =>
+          pane.chapters.length > 0 || pane.target || pane.labelledBy,
+      );
+    const consumedPaneIndices = new Set();
+    const groups = [];
+    let sequentialPaneIndex = 0;
 
-    return groups;
+    controls.forEach((control) => {
+      let pane = panes.find((candidate) =>
+        control.targets.some(
+          (target) =>
+            target &&
+            (candidate.target === target || candidate.labelledBy === target),
+        ),
+      );
+      if (!pane && control.targets.length === 0) {
+        pane = panes.find(
+          (candidate) =>
+            candidate.index >= sequentialPaneIndex &&
+            !consumedPaneIndices.has(candidate.index),
+        );
+      }
+      if (!pane && !isLikelyChapterGroupLabel(control.label)) {
+        return;
+      }
+      if (pane) {
+        consumedPaneIndices.add(pane.index);
+        sequentialPaneIndex = Math.max(sequentialPaneIndex, pane.index + 1);
+      }
+      groups.push({
+        label: control.label,
+        chapters: pane ? pane.chapters : [],
+      });
+    });
+
+    panes.forEach((pane) => {
+      if (consumedPaneIndices.has(pane.index)) {
+        return;
+      }
+      if (pane.chapters.length === 0) {
+        return;
+      }
+      groups.push({
+        label: `列表 ${pane.index + 1}`,
+        chapters: pane.chapters,
+      });
+    });
+
+    return uniqueBy(
+      groups.filter((group) => group.label || group.chapters.length > 0),
+      (group) => {
+        const firstChapterHref =
+          group.chapters.length > 0 ? group.chapters[0].href : '';
+        return `${cleanText(group.label)}::${firstChapterHref}`;
+      },
+    );
   };
   const materializeReaderImages = () => {
     Array.from(document.querySelectorAll('.comicContent-list img')).forEach(

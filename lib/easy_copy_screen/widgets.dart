@@ -1093,6 +1093,30 @@ class _CachedChapterNavigationContext {
       prevHref.trim().isNotEmpty ||
       nextHref.trim().isNotEmpty ||
       catalogHref.trim().isNotEmpty;
+
+  _CachedChapterNavigationContext copyWith({
+    String? prevHref,
+    String? nextHref,
+    String? catalogHref,
+  }) {
+    return _CachedChapterNavigationContext(
+      prevHref: prevHref ?? this.prevHref,
+      nextHref: nextHref ?? this.nextHref,
+      catalogHref: catalogHref ?? this.catalogHref,
+    );
+  }
+
+  _CachedChapterNavigationContext mergeMissing(
+    _CachedChapterNavigationContext fallback,
+  ) {
+    return _CachedChapterNavigationContext(
+      prevHref: prevHref.trim().isNotEmpty ? prevHref : fallback.prevHref,
+      nextHref: nextHref.trim().isNotEmpty ? nextHref : fallback.nextHref,
+      catalogHref: catalogHref.trim().isNotEmpty
+          ? catalogHref
+          : fallback.catalogHref,
+    );
+  }
 }
 
 class _NetworkImageBox extends StatelessWidget {

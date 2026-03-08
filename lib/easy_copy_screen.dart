@@ -11,6 +11,7 @@ import 'package:easy_copy/page_transition_scope.dart';
 import 'package:easy_copy/services/app_preferences_controller.dart';
 import 'package:easy_copy/services/comic_download_service.dart';
 import 'package:easy_copy/services/deferred_viewport_coordinator.dart';
+import 'package:easy_copy/services/discover_filter_selection.dart';
 import 'package:easy_copy/services/display_mode_service.dart';
 import 'package:easy_copy/services/download_storage_service.dart';
 import 'package:easy_copy/services/download_queue_store.dart';
@@ -46,6 +47,8 @@ part 'easy_copy_screen/widgets.dart';
 const Duration _pageFadeTransitionDuration = Duration(milliseconds: 200);
 const Duration _readerExitFadeDuration = Duration(milliseconds: 220);
 const String _detailAllChapterTabKey = '__detail_all__';
+const double _readerNextChapterPullTriggerDistance = 48;
+const double _readerNextChapterPullActivationExtent = 32;
 
 Widget _buildFadeSwitchTransition(Widget child, Animation<double> animation) {
   return FadeTransition(
@@ -125,6 +128,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   bool _isReaderSettingsOpen = false;
   bool _isReaderChapterControlsVisible = false;
   bool _isReaderExitTransitionActive = false;
+  bool _isReaderNextChapterLoading = false;
   bool _readerPresentationSyncScheduled = false;
   bool _suspendStandardScrollTracking = false;
   String _selectedDetailChapterTabKey = _detailAllChapterTabKey;
@@ -132,6 +136,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   String _detailChapterStateRouteKey = '';
   int _currentReaderPageIndex = 0;
   int _currentVisibleReaderImageIndex = 0;
+  double _readerNextChapterPullDistance = 0;
   int? _batteryLevel;
   _AppliedReaderEnvironment? _appliedReaderEnvironment;
   ReaderPreferences? _lastObservedReaderPreferences;
@@ -1792,40 +1797,103 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     Uri targetUri, {
     required _CachedChapterNavigationContext context,
   }) {
-    if (context.hasAnyValue) {
-      return context;
-    }
     final EasyCopyPage? currentPage = _page;
-    if (currentPage is! ReaderPageData) {
+    _CachedChapterNavigationContext resolvedContext = context;
+    if (currentPage is ReaderPageData && !context.hasAnyValue) {
+      final String targetKey = _chapterPathKey(targetUri.toString());
+      final String currentKey = _chapterPathKey(currentPage.uri);
+      final String prevKey = _chapterPathKey(currentPage.prevHref);
+      final String nextKey = _chapterPathKey(currentPage.nextHref);
+
+      if (targetKey == currentKey) {
+        resolvedContext = _CachedChapterNavigationContext(
+          prevHref: currentPage.prevHref,
+          nextHref: currentPage.nextHref,
+          catalogHref: currentPage.catalogHref,
+        );
+      } else if (targetKey == prevKey) {
+        resolvedContext = _CachedChapterNavigationContext(
+          nextHref: currentPage.uri,
+          catalogHref: currentPage.catalogHref,
+        );
+      } else if (targetKey == nextKey) {
+        resolvedContext = _CachedChapterNavigationContext(
+          prevHref: currentPage.uri,
+          catalogHref: currentPage.catalogHref,
+        );
+      } else {
+        resolvedContext = _CachedChapterNavigationContext(
+          catalogHref: currentPage.catalogHref,
+        );
+      }
+    }
+
+    final _CachedChapterNavigationContext detailContext =
+        _cachedChapterNavigationContextFromDetail(
+          targetUri,
+          preferredCatalogHref: resolvedContext.catalogHref,
+        );
+    return resolvedContext.mergeMissing(detailContext);
+  }
+
+  _CachedChapterNavigationContext _cachedChapterNavigationContextFromDetail(
+    Uri targetUri, {
+    String preferredCatalogHref = '',
+  }) {
+    final String targetKey = _chapterPathKey(targetUri.toString());
+    if (targetKey.isEmpty) {
       return const _CachedChapterNavigationContext();
     }
-    final String targetKey = _chapterPathKey(targetUri.toString());
-    final String currentKey = _chapterPathKey(currentPage.uri);
-    final String prevKey = _chapterPathKey(currentPage.prevHref);
-    final String nextKey = _chapterPathKey(currentPage.nextHref);
+    final List<PrimaryTabRouteEntry> stackEntries = _tabSessionStore
+        .stackForTab(_selectedIndex);
+    final List<DetailPageData> detailPages = stackEntries
+        .map((PrimaryTabRouteEntry entry) => entry.page)
+        .whereType<DetailPageData>()
+        .toList(growable: false)
+        .reversed
+        .toList(growable: false);
+    if (detailPages.isEmpty) {
+      return const _CachedChapterNavigationContext();
+    }
 
-    if (targetKey == currentKey) {
+    _CachedChapterNavigationContext contextForPage(DetailPageData page) {
+      final List<ChapterData> chapters = _detailChapterList(page);
+      final int index = chapters.indexWhere(
+        (ChapterData chapter) => _chapterPathKey(chapter.href) == targetKey,
+      );
+      if (index == -1) {
+        return const _CachedChapterNavigationContext();
+      }
       return _CachedChapterNavigationContext(
-        prevHref: currentPage.prevHref,
-        nextHref: currentPage.nextHref,
-        catalogHref: currentPage.catalogHref,
+        prevHref: index > 0 ? chapters[index - 1].href : '',
+        nextHref: index + 1 < chapters.length ? chapters[index + 1].href : '',
+        catalogHref: page.uri,
       );
     }
-    if (targetKey == prevKey) {
-      return _CachedChapterNavigationContext(
-        nextHref: currentPage.uri,
-        catalogHref: currentPage.catalogHref,
-      );
+
+    final String preferredCatalogRouteKey = preferredCatalogHref.trim().isEmpty
+        ? ''
+        : AppConfig.routeKeyForUri(Uri.parse(preferredCatalogHref));
+    if (preferredCatalogRouteKey.isNotEmpty) {
+      for (final DetailPageData page in detailPages) {
+        if (AppConfig.routeKeyForUri(Uri.parse(page.uri)) !=
+            preferredCatalogRouteKey) {
+          continue;
+        }
+        final _CachedChapterNavigationContext context = contextForPage(page);
+        if (context.hasAnyValue) {
+          return context;
+        }
+      }
     }
-    if (targetKey == nextKey) {
-      return _CachedChapterNavigationContext(
-        prevHref: currentPage.uri,
-        catalogHref: currentPage.catalogHref,
-      );
+
+    for (final DetailPageData page in detailPages) {
+      final _CachedChapterNavigationContext context = contextForPage(page);
+      if (context.hasAnyValue) {
+        return context;
+      }
     }
-    return _CachedChapterNavigationContext(
-      catalogHref: currentPage.catalogHref,
-    );
+    return const _CachedChapterNavigationContext();
   }
 
   Future<void> _revalidateCachedPage(
@@ -1961,7 +2029,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }
 
   Future<void> _retryCurrentPage() async {
-    if (_page is ProfilePageData || _selectedIndex == 3) {
+    final EasyCopyPage? page = _page;
+    if (page is ProfilePageData ||
+        (page == null && _isProfileUri(_currentUri))) {
       await _loadProfilePage(
         forceRefresh: true,
         preserveVisiblePage: _page != null,
@@ -1990,9 +2060,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (href.trim().isEmpty) {
       return;
     }
+    final Uri targetUri = AppConfig.resolveNavigationUri(
+      href,
+      currentUri: _currentUri,
+    );
+    _applyOptimisticDiscoverFilterSelectionToCurrentPage(targetUri);
     unawaited(
       _loadUri(
-        AppConfig.resolveNavigationUri(href, currentUri: _currentUri),
+        targetUri,
         preserveVisiblePage: true,
         historyMode: NavigationIntent.preserve,
       ),
@@ -2010,6 +2085,27 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         historyMode: NavigationIntent.preserve,
       ),
     );
+  }
+
+  void _applyOptimisticDiscoverFilterSelectionToCurrentPage(Uri targetUri) {
+    final EasyCopyPage? page = _page;
+    if (page is! DiscoverPageData) {
+      return;
+    }
+    final DiscoverPageData nextPage = applyOptimisticDiscoverFilterSelection(
+      page,
+      currentUri: _currentUri,
+      targetUri: targetUri,
+    );
+    if (identical(nextPage, page)) {
+      return;
+    }
+    _mutateSessionState(() {
+      _tabSessionStore.updateCurrent(
+        _selectedIndex,
+        (PrimaryTabRouteEntry entry) => entry.copyWith(page: nextPage),
+      );
+    });
   }
 
   void _navigateToHref(String href, {int? sourceTabIndex}) {
@@ -2635,6 +2731,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     unawaited(EasyCopyImageCaches.prefetchReaderImages(remoteImages));
     unawaited(_markReaderChapterVisited(page));
     final bool changedPage = previousUri != page.uri;
+    if (changedPage || forceRestore) {
+      _resetReaderNextChapterState();
+    }
     if (changedPage) {
       _currentReaderPageIndex = 0;
       _currentVisibleReaderImageIndex = 0;
@@ -2852,6 +2951,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (_currentReaderPageIndex == index) {
       return;
     }
+    _resetReaderNextChapterState();
     if (!mounted) {
       _currentReaderPageIndex = index;
       _currentVisibleReaderImageIndex = index;

@@ -268,15 +268,9 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
         candidateHosts: _hostManager.candidateHosts,
         hostSnapshot: _hostManager.probeSnapshot,
         isRefreshingHosts: _isUpdatingHostSettings,
-        onRefreshHosts: () {
-          unawaited(_refreshHostSettings());
-        },
-        onUseAutomaticHostSelection: () {
-          unawaited(_useAutomaticHostSelection());
-        },
-        onSelectHost: (String host) {
-          unawaited(_selectHost(host));
-        },
+        onRefreshHosts: _refreshHostSettings,
+        onUseAutomaticHostSelection: _useAutomaticHostSelection,
+        onSelectHost: _selectHost,
         themePreference: _preferencesController.themePreference,
         onThemePreferenceChanged: (AppThemePreference preference) {
           unawaited(_preferencesController.setThemePreference(preference));

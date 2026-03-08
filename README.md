@@ -1,178 +1,115 @@
-# EasyCopy
+<div align="center">
+  <img src="assets/icons/app_icon_rounded_1024.png" alt="EasyCopy Logo" width="160" />
+  <h1>EasyCopy</h1>
+  <p><strong>专为移动端打造的原生沉浸式漫画阅读体验</strong></p>
+  <p>
+    一个基于 Flutter 的创新型漫画客户端。它并非简单的 WebView 套壳，而是通过在后台无感加载目标站点，提取结构化数据，最终使用纯正的 Flutter 原生组件重新构建首页、发现、排行及阅读等核心界面。<br/>
+    既能无缝对接原网站的内容池与账号体系，又能彻底掌控移动端的交互细节、流畅度与缓存策略。
+  </p>
+</div>
 
-<img src="assets/icons/app_icon_rounded_1024.png" alt="EasyCopy 新头像" width="320" />
+---
 
-EasyCopy 是一个 Flutter 客户端，用来把 Copy 系漫画站的桌面网页重建成适合手机阅读的原生界面。
+## ✨ 核心特性
 
-它不是简单地把网页塞进 WebView，而是把原站页面放到后台加载，提取结构化数据后再用 Flutter 渲染首页、发现、排行、详情、阅读和个人中心。这样既能沿用原站内容和账号体系，也能把移动端交互、缓存和阅读体验掌握在客户端里。
+- 🚀 **完全原生重构**：告别网页版在移动端的卡顿与不适，以 Flutter 原生 UI 渲染首页、分类、排行榜及漫画详情页。
+- 📱 **纯粹阅读体验**：量身定制的无缝图片流阅读器，支持自动记录阅读进度、本地与在线章节无缝衔接。
+- 🛡️ **高可用节点调度**：内置多候选域名池，启动时自动智能测速；主站异常时无缝 Failover 切换，拒绝单点故障。
+- 💾 **强悍的离线引擎**：
+  - 持久化下载队列，可稳定从已获取进度的位置继续补齐章节图片。
+  - 页面级按策略缓存，涵盖不同生效 TTL 与登录隔离域。
+  - 阅读页图片与封面数据独立采用差异化的高效缓存机制。
+- 🔐 **融合登录体系**：调用站点原生接口进行无感登录认证，并以网页端作为兜底方案，全应用级别共享 Token 与 Cookie。
 
-## 项目目标
+## 📸 界面预览
 
-- 隐藏桌面版网页壳，只保留站点内容和登录态
-- 以原生方式重建移动端首页、发现、排行、详情和阅读体验
-- 支持备用网址探测与自动切换，减少单一域名失效带来的影响
-- 提供章节缓存、阅读进度恢复、页面缓存等移动端能力
+| 首页推荐 | 漫画详情 | 沉浸阅读 |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/home-fresh.png" width="260"/> | <img src="docs/screenshots/detail-page.png" width="260"/> | <img src="docs/screenshots/reader-page.png" width="260"/> |
 
-## 已实现功能
+## 🏗️ 架构与核心实现
 
-### 1. 原生页面重建
+本项目不仅是一个客户端，更是一套「Web 转 Native」的高效解析框架：
 
-- 首页：轮播、推荐区块、漫画卡片
-- 发现页：筛选、分页、搜索结果、专题跳转
-- 排行页：分类切换、时间维度切换、榜单卡片
-- 详情页：封面、作者、标签、简介、章节列表、开始阅读
-- 阅读页：图片流阅读、上一话 / 下一话、目录回跳
-- 我的页面：用户信息、继续阅读、收藏、浏览历史
+1. **暗中接管**：后台 `WebView` 使用桌面 UA 静默加载目标网页。
+2. **DOM 抽离**：注入 `page_extractor_script.dart` 脚本，将 DOM 节点降维解析为统一的结构化 JSON。
+3. **数据反序列化**：`EasyCopyScreen` 监听并捕获数据，映射回结构化领域模型（`EasyCopyPage`）。
+4. **原生重绘**：Flutter 依靠上述标准数据，利用原生组件渲染出流畅的交互界面。
 
-### 2. 登录与会话
+### 核心模块一览
 
-- 支持直接调用站点登录接口进行原生登录
-- 提供网页登录兜底，用于注册或处理特殊登录场景
-- 统一保存 token 和 cookie，供 API 请求、WebView 和图片下载复用
+- **生命周期与容器 (`lib/easy_copy_screen.dart` & `lib/easy_copy_screen/`)**：统一管理路由导航、Web态装载进度与全局事件派发。
+- **高可用网关 (`lib/services/host_manager.dart`)**：探活侧载机制与主节点智能重定向。
+- **缓存大脑 (`lib/services/page_repository.dart`)**：复杂页面的多级缓存（Memory/Disk）与数据一致性比对。
+- **持久化下载器 (`lib/services/comic_download_service.dart` & `download_queue_store.dart`)**：主控并发队列处理和全本缓存生命周期。
 
-### 3. 缓存与离线能力
-
-- 页面缓存：按页面类型设置不同 TTL，并按登录作用域隔离
-- 图片缓存：封面和阅读图片使用独立缓存策略
-- 章节缓存：支持把整话图片保存到本地目录
-- 后台队列：支持多章节排队、暂停、恢复、失败重试思路
-- 已缓存漫画库：可浏览、继续打开、删除本地缓存
-
-### 4. 可用节点切换
-
-- 内置多个候选域名
-- 启动时探测可用 host 并记录测速结果
-- 主域异常时可以自动 failover 到其他可用节点
-- 缓存页面中的站内链接会在恢复时重写到当前节点
-
-### 5. 阅读体验
-
-- 记录阅读进度并在回到章节时恢复位置
-- 阅读页支持本地缓存章节与在线章节共存
-- 详情页可识别已缓存章节并给出状态提示
-
-## 真机截图
-
-以下截图来自 Android 真机 fresh install 状态，不包含个人账号信息。
-
-### 首页
-
-![首页](docs/screenshots/home-fresh.png)
-
-### 漫画详情
-
-![漫画详情](docs/screenshots/detail-page.png)
-
-### 阅读页
-
-![阅读页](docs/screenshots/reader-page.png)
-
-## 核心实现
-
-### 页面获取链路
-
-1. `WebView` 以桌面 UA 加载目标页面
-2. 注入 `page_extractor_script.dart`，把 DOM 转成结构化 JSON
-3. `EasyCopyScreen` 接收消息并恢复成 `EasyCopyPage`
-4. Flutter 用原生组件重新渲染页面
-
-### 关键模块
-
-- `lib/easy_copy_screen.dart`
-  - 主容器，负责导航、页面加载、阅读态和下载队列
-- `lib/services/host_manager.dart`
-  - 备用网址探测、选主和 failover
-- `lib/services/page_repository.dart`
-  - 页面缓存、内存缓存、重新验证
-- `lib/services/site_api_client.dart`
-  - 登录、个人中心接口、收藏与历史数据拉取
-- `lib/services/site_session.dart`
-  - token / cookie 持久化
-- `lib/services/comic_download_service.dart`
-  - 章节图片下载、本地 manifest、已缓存漫画库
-- `lib/services/download_queue_store.dart`
-  - 后台缓存队列持久化
-- `lib/services/reader_progress_store.dart`
-  - 阅读进度保存与恢复
-
-### 页面模型
-
-统一页面模型定义在 `lib/models/page_models.dart`，当前支持：
-
-- `home`
-- `discover`
-- `rank`
-- `detail`
-- `reader`
-- `profile`
-- `unknown`
-
-## 目录结构
+## 📁 目录结构
 
 ```text
 lib/
-  config/      应用配置与导航定义
-  models/      页面数据模型
-  services/    Host、缓存、登录、下载等核心服务
-  webview/     页面提取脚本
-  widgets/     登录页、个人中心等独立组件
-test/          单元测试、组件测试、HTML 夹具
-docs/          README 使用的真机截图
-android/       Android 工程
+├── models/       # 领域驱动的数据模型 (Home, Detail, Reader 等)
+├── services/     # 核心中间件与后端服务 (节点管理、鉴权、缓存、队列)
+├── webview/      # 核心解析引擎提取脚本
+├── easy_copy_screen/ # 主界面复杂逻辑与状态分拆的 part 文件
+├── widgets/      # 页面级组件与复用 UI (如个人中心视图、设置项、下载管理)
+├── app_config.dart # 全局配置常量
+└── app_theme.dart  # 全局主题样式定义
+test/             # 测试套件 (涉及解析逻辑与网络切换断言)
+docs/             # README 使用的真机截图物料
+android/          # Android Native 工程
 ```
 
-## 本地开发
+## 💻 开发者指南
 
-当前仓库本地验证环境：
+**开发环境声明：**
+- **Flutter**: 3.38.7
+- **Dart**: 3.10.7
 
-- Flutter 3.38.7
-- Dart 3.10.7
-
-### 安装依赖
+### 快速启动
 
 ```bash
+# 获取最新依赖包
 flutter pub get
-```
 
-### 运行
-
-```bash
+# 启动并部署至 Android 物理机 / 模拟器
 flutter run -d android
 ```
 
-### Android 构建
+### 构建与发行
+
+构建标准的 release APK 应用：
 
 ```bash
 flutter build apk --release --target-platform android-arm64
 ```
 
-构建独立 `arm64-v8a` APK：
+如需针对终端设备的指令集进行分割（减少多余的包体积）：
 
 ```bash
 flutter build apk --release --target-platform=android-arm64 --split-per-abi
 ```
+> **提示：** 部署产物默认输出至 `build/app/outputs/flutter-apk/` 目录。
 
-构建结果默认位于 `build/app/outputs/flutter-apk/`。
+## 🧪 持续集成与质量检验
 
-## 质量检查
+每次代码合并前，请确保通过所有静态风格校验与单元测试：
 
 ```bash
+# 静态代码分析
 flutter analyze
+
+# 核心链路回归测试
 flutter test
 ```
+*主要测试覆盖面包含：高可用网络探测回退、页面级缓存读写时效、下载队列事务持久化、鉴权隔离等核心业务链路。*
 
-## 测试覆盖重点
+## ⚠️ 特别声明
 
-- Host 探测与切换
-- 页面缓存读写与过期策略
-- 下载队列持久化
-- 章节缓存逻辑
-- 个人中心数据解析
-- 应用标题与基础组件行为
+- **平台聚焦**：目前仓库仅单独保留与维护 Android 工程。
+- **非通用爬虫**：框架重度耦合于目标站点的 DOM 结构设计与接口规范，非通用全网抽取框架。
+- **渐进式覆盖**：若遇到尚未进行原生标准化重写的页面（标注为 `unknown` 路由类型），当前会直接使用标准的未支持页面提示进行展示，不会继续尝试原生渲染。
 
-## 备注
-
-- 当前仓库仅保留 Android 工程
-- Android 原生工程标识已统一到 `com.huangusaki.easycopy`
-- 项目强依赖目标站点的 DOM 结构和接口返回格式，不是通用爬虫框架
-- `unknown` 页面类型表示该路由还没有完成原生重建
+---
+<div align="center">
+  <p>Made with ❤️ by Huangusaki</p>
+</div>

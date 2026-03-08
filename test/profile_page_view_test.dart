@@ -317,6 +317,7 @@ void main() {
     await tester.tap(find.text('管理节点'));
     await tester.pumpAndSettle();
 
+    expect(find.text('当前已手动锁定到 beta.example。点击其他节点可立即切换。'), findsOneWidget);
     expect(find.text('恢复自动选择'), findsOneWidget);
     expect(find.text('推荐'), findsOneWidget);
     expect(find.text('gamma.example'), findsOneWidget);
@@ -333,5 +334,6 @@ void main() {
     await tester.tap(find.text('gamma.example'));
     await tester.pumpAndSettle();
     expect(selectedHost, 'gamma.example');
+    expect(find.text('当前已手动锁定到 gamma.example。点击其他节点可立即切换。'), findsOneWidget);
   });
 }
