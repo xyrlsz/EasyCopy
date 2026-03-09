@@ -67,8 +67,11 @@ class PageProbeService {
     }
     if (document.querySelector('.exemptComicList') != null ||
         document.querySelector('.correlationList .exemptComic_Item') != null ||
+        document.querySelector('.specialDetail') != null ||
+        document.querySelector('.specialContent') != null ||
         path.startsWith('/search') ||
         path.startsWith('/comics') ||
+        path.startsWith('/topic') ||
         path.startsWith('/recommend') ||
         path.startsWith('/newest')) {
       return EasyCopyPageType.discover;
@@ -94,8 +97,12 @@ class PageProbeService {
         return _readerFingerprint(uri, body, document);
       case EasyCopyPageType.rank:
         return _rankFingerprint(uri, document);
-      case EasyCopyPageType.home:
       case EasyCopyPageType.discover:
+        if (uri.path.toLowerCase().startsWith('/topic')) {
+          return _topicFingerprint(uri, document);
+        }
+        return _listFingerprint(uri, document);
+      case EasyCopyPageType.home:
       case EasyCopyPageType.profile:
       case EasyCopyPageType.unknown:
         return _listFingerprint(uri, document);
@@ -135,6 +142,31 @@ class PageProbeService {
     return <String>[
       uri.path,
       activeTabs.join('|'),
+      cards.isEmpty ? '' : cards.first.fingerprint,
+      cards.isEmpty ? '' : cards.last.fingerprint,
+      '${cards.length}',
+    ].join('::');
+  }
+
+  String _topicFingerprint(Uri uri, dom.Document document) {
+    final String path = uri.path.toLowerCase();
+    if (path.startsWith('/topic/') ||
+        document.querySelector('.specialDetail') != null) {
+      final List<_CardFingerprint> cards = _topicDetailCards(document, uri);
+      return <String>[
+        uri.path,
+        _nodeText(document.querySelector('.specialDetailTitleFlex span')),
+        cards.isEmpty ? '' : cards.first.fingerprint,
+        cards.isEmpty ? '' : cards.last.fingerprint,
+        '${cards.length}',
+      ].join('::');
+    }
+
+    final List<_CardFingerprint> cards = _topicCards(document, uri);
+    return <String>[
+      uri.path,
+      uri.query,
+      _nodeText(document.querySelector('.page-all-item.active a')),
       cards.isEmpty ? '' : cards.first.fingerprint,
       cards.isEmpty ? '' : cards.last.fingerprint,
       '${cards.length}',
@@ -206,6 +238,69 @@ class PageProbeService {
         })
         .whereType<_CardFingerprint>()
         .toList(growable: false);
+  }
+
+  List<_CardFingerprint> _topicCards(dom.Document document, Uri currentUri) {
+    final Map<String, _CardFingerprint> cards = <String, _CardFingerprint>{};
+    for (final dom.Element card in document.querySelectorAll(
+      '.specialContent',
+    )) {
+      final dom.Element? anchor =
+          card.querySelector('.specialContentImage a[href*="/topic/"]') ??
+          card.querySelector('.specialContentButton a[href*="/topic/"]');
+      if (anchor == null) {
+        continue;
+      }
+      final String href = _absoluteUrl(currentUri, anchor.attributes['href']);
+      if (href.isEmpty || cards.containsKey(href)) {
+        continue;
+      }
+      final String title =
+          _nodeText(card.querySelector('.specialContentImageSpan')).isNotEmpty
+          ? _nodeText(card.querySelector('.specialContentImageSpan'))
+          : (_nodeText(
+                  card.querySelector('.specialContentTextTitle'),
+                ).isNotEmpty
+                ? _nodeText(card.querySelector('.specialContentTextTitle'))
+                : _nodeText(anchor));
+      cards[href] = _CardFingerprint(title: title, href: href);
+    }
+    return cards.values.toList(growable: false);
+  }
+
+  List<_CardFingerprint> _topicDetailCards(
+    dom.Document document,
+    Uri currentUri,
+  ) {
+    final Map<String, _CardFingerprint> cards = <String, _CardFingerprint>{};
+    for (final dom.Element card in document.querySelectorAll(
+      '.specialDetailItem',
+    )) {
+      final dom.Element? anchor =
+          card.querySelector(
+            '.specialDetailItemHeaderContentName a[href*="/comic/"]',
+          ) ??
+          card.querySelector(
+            '.specialDetailItemHeaderImage a[href*="/comic/"]',
+          );
+      if (anchor == null) {
+        continue;
+      }
+      final String href = _absoluteUrl(currentUri, anchor.attributes['href']);
+      if (href.isEmpty || cards.containsKey(href)) {
+        continue;
+      }
+      final String title =
+          _nodeText(
+            card.querySelector('.specialDetailItemHeaderContentName a'),
+          ).isNotEmpty
+          ? _nodeText(
+              card.querySelector('.specialDetailItemHeaderContentName a'),
+            )
+          : _nodeText(anchor);
+      cards[href] = _CardFingerprint(title: title, href: href);
+    }
+    return cards.values.toList(growable: false);
   }
 
   String _infoValue(dom.Document document, String prefix) {

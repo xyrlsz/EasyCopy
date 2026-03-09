@@ -171,6 +171,125 @@ void main() {
     },
   );
 
+  test('page probe treats topic routes as discover pages', () async {
+    const String topicIndexHtml = '''
+<!DOCTYPE html>
+<html lang="zh-hant">
+  <head>
+    <title>專題 - 拷貝漫畫 拷贝漫画</title>
+  </head>
+  <body>
+    <main class="content-box">
+      <div class="specialContent comic">
+        <div class="specialContentImage">
+          <a href="/topic/demo-topic-a">
+            <img src="https://example.com/topic-a.jpg" alt="">
+          </a>
+          <span class="specialContentImageSpan">專題 A</span>
+        </div>
+        <div class="specialContentTextContent">推薦摘要 A</div>
+        <div class="specialContentButton">
+          <span class="specialContentButtonTime">2026-03-01</span>
+        </div>
+      </div>
+      <div class="specialContent comic">
+        <div class="specialContentImage">
+          <a href="/topic/demo-topic-b">
+            <img src="https://example.com/topic-b.jpg" alt="">
+          </a>
+          <span class="specialContentImageSpan">專題 B</span>
+        </div>
+      </div>
+      <ul class="page-all">
+        <li class="page-all-item active">
+          <a href="/topic?offset=0">1</a>
+        </li>
+      </ul>
+    </main>
+  </body>
+</html>
+''';
+    const String topicDetailHtml = '''
+<!DOCTYPE html>
+<html lang="zh-hant">
+  <head>
+    <title>秋番漫畫專題 - 拷貝漫畫 拷贝漫画</title>
+  </head>
+  <body>
+    <div class="titleImg swiper">
+      <img src="https://example.com/topic-cover.jpg" alt="">
+    </div>
+    <main class="container specialDetail">
+      <div class="specialDetailTitle">
+        <div class="specialDetailTitleFlex">
+          <span>秋番漫畫專題</span>
+          <span>2026-03-01</span>
+        </div>
+      </div>
+      <div class="row">
+        <div class="col-6 specialDetailItem">
+          <div class="specialDetailItemHeaderImage">
+            <a href="/comic/demo-a">
+              <img src="https://example.com/a.jpg" alt="">
+            </a>
+          </div>
+          <p class="specialDetailItemHeaderContentName twoLines">
+            <a href="/comic/demo-a">作品 A</a>
+          </p>
+        </div>
+        <div class="col-6 specialDetailItem">
+          <div class="specialDetailItemHeaderImage">
+            <a href="/comic/demo-b">
+              <img src="https://example.com/b.jpg" alt="">
+            </a>
+          </div>
+          <p class="specialDetailItemHeaderContentName twoLines">
+            <a href="/comic/demo-b">作品 B</a>
+          </p>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
+''';
+    final PageProbeService service = PageProbeService(
+      client: MockClient((http.Request request) async {
+        if (request.url.path == '/topic') {
+          return http.Response.bytes(utf8.encode(topicIndexHtml), 200);
+        }
+        return http.Response.bytes(utf8.encode(topicDetailHtml), 200);
+      }),
+      now: () => DateTime(2026, 3, 6, 12),
+      userAgent: 'test-agent',
+    );
+
+    final PageProbeResult topicIndex = await service.probe(
+      Uri.parse('https://www.2026copy.com/topic'),
+    );
+    final PageProbeResult topicDetail = await service.probe(
+      Uri.parse('https://www.2026copy.com/topic/demo-topic-a'),
+    );
+
+    expect(topicIndex.pageType, EasyCopyPageType.discover);
+    expect(topicIndex.fingerprint, startsWith('/topic::::1::'));
+    expect(
+      topicIndex.fingerprint,
+      contains('https://www.2026copy.com/topic/demo-topic-a'),
+    );
+    expect(topicIndex.fingerprint, endsWith('::2'));
+
+    expect(topicDetail.pageType, EasyCopyPageType.discover);
+    expect(
+      topicDetail.fingerprint,
+      startsWith('/topic/demo-topic-a::秋番漫畫專題::'),
+    );
+    expect(
+      topicDetail.fingerprint,
+      contains('https://www.2026copy.com/comic/demo-a'),
+    );
+    expect(topicDetail.fingerprint, endsWith('::2'));
+  });
+
   test('page probe fingerprints rank tabs and ranking cards', () async {
     final String rankHtml = await File(fixturePath('rank.html')).readAsString();
     final PageProbeService service = PageProbeService(

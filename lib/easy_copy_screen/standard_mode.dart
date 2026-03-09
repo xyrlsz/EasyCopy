@@ -115,15 +115,14 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
   }
 
   bool get _shouldShowDiscoverSearchChrome {
-    if (_selectedIndex != 1 || _isDetailRoute) {
+    if (_selectedIndex != 1 || _isDetailRoute || _isSecondaryDiscoverRoute) {
       return false;
     }
     final EasyCopyPage? page = _page;
     if (page == null || page is DiscoverPageData) {
       return true;
     }
-    final String path = _currentUri.path.toLowerCase();
-    return path.startsWith('/comics') || path.startsWith('/search');
+    return _isPrimaryDiscoverUri(_currentUri);
   }
 
   Widget _buildDiscoverSearchChrome(BuildContext context) {
@@ -1151,6 +1150,11 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
 
   List<Widget> _buildDiscoverSections(DiscoverPageData page) {
     final List<Widget> sections = <Widget>[];
+    final bool hasPager =
+        page.pager.hasPrev ||
+        page.pager.hasNext ||
+        page.pager.currentLabel.isNotEmpty ||
+        page.pager.totalLabel.isNotEmpty;
 
     if (page.filters.isNotEmpty) {
       final FilterGroupData primaryGroup = page.filters.first;
@@ -1223,28 +1227,30 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
         ),
       ),
     );
-    sections.add(const SizedBox(height: 18));
-    sections.add(
-      IgnorePointer(
-        ignoring: _isLoading,
-        child: Opacity(
-          opacity: _isLoading ? 0.72 : 1,
-          child: _PagerCard(
-            pager: page.pager,
-            onPrev: page.pager.hasPrev
-                ? () {
-                    unawaited(_openDiscoverPagerHref(page.pager.prevHref));
-                  }
-                : null,
-            onNext: page.pager.hasNext
-                ? () {
-                    unawaited(_openDiscoverPagerHref(page.pager.nextHref));
-                  }
-                : null,
+    if (hasPager) {
+      sections.add(const SizedBox(height: 18));
+      sections.add(
+        IgnorePointer(
+          ignoring: _isLoading,
+          child: Opacity(
+            opacity: _isLoading ? 0.72 : 1,
+            child: _PagerCard(
+              pager: page.pager,
+              onPrev: page.pager.hasPrev
+                  ? () {
+                      unawaited(_openDiscoverPagerHref(page.pager.prevHref));
+                    }
+                  : null,
+              onNext: page.pager.hasNext
+                  ? () {
+                      unawaited(_openDiscoverPagerHref(page.pager.nextHref));
+                    }
+                  : null,
+            ),
           ),
         ),
-      ),
-    );
+      );
+    }
 
     return sections;
   }

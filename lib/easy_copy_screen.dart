@@ -20,6 +20,7 @@ import 'package:easy_copy/services/image_cache.dart';
 import 'package:easy_copy/services/navigation_request_guard.dart';
 import 'package:easy_copy/services/page_cache_store.dart';
 import 'package:easy_copy/services/page_repository.dart';
+import 'package:easy_copy/services/rank_filter_selection.dart';
 import 'package:easy_copy/services/primary_tab_session_store.dart';
 import 'package:easy_copy/services/reader_platform_bridge.dart';
 import 'package:easy_copy/services/reader_progress_store.dart';
@@ -2265,9 +2266,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (href.trim().isEmpty) {
       return;
     }
+    final Uri targetUri = AppConfig.resolveNavigationUri(
+      href,
+      currentUri: _currentUri,
+    );
+    _applyOptimisticRankFilterSelectionToCurrentPage(targetUri);
     unawaited(
       _loadUri(
-        AppConfig.resolveNavigationUri(href, currentUri: _currentUri),
+        targetUri,
         preserveVisiblePage: true,
         historyMode: NavigationIntent.preserve,
       ),
@@ -2280,6 +2286,27 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       return;
     }
     final DiscoverPageData nextPage = applyOptimisticDiscoverFilterSelection(
+      page,
+      currentUri: _currentUri,
+      targetUri: targetUri,
+    );
+    if (identical(nextPage, page)) {
+      return;
+    }
+    _mutateSessionState(() {
+      _tabSessionStore.updateCurrent(
+        _selectedIndex,
+        (PrimaryTabRouteEntry entry) => entry.copyWith(page: nextPage),
+      );
+    });
+  }
+
+  void _applyOptimisticRankFilterSelectionToCurrentPage(Uri targetUri) {
+    final EasyCopyPage? page = _page;
+    if (page is! RankPageData) {
+      return;
+    }
+    final RankPageData nextPage = applyOptimisticRankFilterSelection(
       page,
       currentUri: _currentUri,
       targetUri: targetUri,
@@ -3402,6 +3429,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
 
   bool get _shouldShowBackButton {
     final EasyCopyPage? page = _page;
+    if (_isSecondaryDiscoverRoute) {
+      return true;
+    }
     if (page is DetailPageData || page is UnknownPageData || _isDetailRoute) {
       return true;
     }
@@ -3410,6 +3440,27 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       return true;
     }
     return false;
+  }
+
+  bool _isPrimaryDiscoverUri(Uri uri) {
+    final String path = uri.path.toLowerCase();
+    return path.startsWith('/comics') ||
+        path.startsWith('/filter') ||
+        path.startsWith('/search');
+  }
+
+  bool _isDiscoverUri(Uri uri) {
+    final String path = uri.path.toLowerCase();
+    return path.startsWith('/comics') ||
+        path.startsWith('/filter') ||
+        path.startsWith('/search') ||
+        path.startsWith('/topic') ||
+        path.startsWith('/recommend') ||
+        path.startsWith('/newest');
+  }
+
+  bool get _isSecondaryDiscoverRoute {
+    return _isDiscoverUri(_currentUri) && !_isPrimaryDiscoverUri(_currentUri);
   }
 
   String get _pageTitle {

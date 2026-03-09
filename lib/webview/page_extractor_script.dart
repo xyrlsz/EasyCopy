@@ -26,6 +26,8 @@ const String _pageExtractionScriptTemplate = r"""
       .filter((value) => value.length > 0);
   const discoverComicSelector =
     '.exemptComic-box a[href*="/comic/"], .correlationList a[href*="/comic/"]';
+  const topicListSelector = '.specialContent';
+  const topicDetailSelector = '.specialDetailItem';
   const absoluteUrl = (value) => {
     const next = cleanText(value);
     if (!next || next === '#') {
@@ -50,6 +52,10 @@ const String _pageExtractionScriptTemplate = r"""
     }
     return text(root.querySelector(selector));
   };
+  const textList = (nodes) =>
+    Array.from(nodes)
+      .map((node) => text(node))
+      .filter((value) => value.length > 0);
   const imageUrl = (node) => {
     if (!node) {
       return '';
@@ -112,6 +118,70 @@ const String _pageExtractionScriptTemplate = r"""
     uniqueBy(
       Array.from(root.querySelectorAll(selector))
         .map((node) => buildComicCard(node))
+        .filter((item) => item.title && item.href),
+      (item) => item.href,
+    );
+  const buildTopicListCard = (card) => {
+    const anchor =
+      card.querySelector('.specialContentImage a[href]') ||
+      card.querySelector('.specialContentButton a[href]');
+    return {
+      title:
+        queryText(card, '.specialContentImageSpan') ||
+        queryText(card, '.specialContentTextTitle') ||
+        text(anchor),
+      subtitle: queryText(card, '.specialContentTextContent'),
+      secondaryText: queryText(card, '.specialContentButtonTime'),
+      coverUrl: imageUrl(card.querySelector('.specialContentImage img')),
+      href: linkUrl(anchor),
+      badge: '專題',
+    };
+  };
+  const collectTopicListCards = (root) =>
+    uniqueBy(
+      Array.from(root.querySelectorAll(topicListSelector))
+        .map((card) => buildTopicListCard(card))
+        .filter((item) => item.title && item.href),
+      (item) => item.href,
+    );
+  const buildTopicDetailComicCard = (card) => {
+    const titleAnchor =
+      card.querySelector('.specialDetailItemHeaderContentName a[href]') ||
+      card.querySelector('.specialDetailItemHeaderImage a[href]');
+    const authorLabels = uniqueStrings(
+      textList(
+        card.querySelectorAll(
+          '.specialDetailItemHeaderContentText a[href*="/author/"]',
+        ),
+      ),
+    );
+    const infoLines = textList(
+      card.querySelectorAll('.specialDetailItemHeaderContentText'),
+    );
+    const heatLine =
+      infoLines.find(
+        (value) => value.includes('熱度') || value.includes('热度'),
+      ) || '';
+    const tagLabels = uniqueStrings(
+      Array.from(
+        card.querySelectorAll('.specialDetailItemHeaderContentLabel a'),
+      ).map((anchor) => text(anchor).replace(/^#/, '')),
+    );
+
+    return {
+      title: text(titleAnchor),
+      subtitle:
+        authorLabels.length > 0 ? `作者：${authorLabels.join(' / ')}` : '',
+      secondaryText: heatLine,
+      coverUrl: imageUrl(card.querySelector('.specialDetailItemHeaderImage img')),
+      href: linkUrl(titleAnchor),
+      badge: tagLabels.length > 0 ? tagLabels[0] : '',
+    };
+  };
+  const collectTopicDetailComicCards = (root) =>
+    uniqueBy(
+      Array.from(root.querySelectorAll(topicDetailSelector))
+        .map((card) => buildTopicDetailComicCard(card))
         .filter((item) => item.title && item.href),
       (item) => item.href,
     );
@@ -347,8 +417,11 @@ const String _pageExtractionScriptTemplate = r"""
     if (
       document.querySelector('.exemptComicList') ||
       document.querySelector('.correlationList .exemptComic_Item') ||
+      document.querySelector('.specialDetail') ||
+      document.querySelector('.specialContent') ||
       path.startsWith('/comics') ||
       path.startsWith('/search') ||
+      path.startsWith('/topic') ||
       path.startsWith('/recommend') ||
       path.startsWith('/newest')
     ) {
@@ -442,19 +515,29 @@ const String _pageExtractionScriptTemplate = r"""
     };
   };
   const buildDiscoverPayload = () => {
-    const items = collectComicCards(document, discoverComicSelector);
+    const path = location.pathname.toLowerCase();
+    const isTopicDetail =
+      path.startsWith('/topic/') || !!document.querySelector('.specialDetail');
+    const isTopicRoute = path.startsWith('/topic');
+    const items = isTopicDetail
+      ? collectTopicDetailComicCards(document)
+      : isTopicRoute
+      ? collectTopicListCards(document)
+      : collectComicCards(document, discoverComicSelector);
     const pager = document.querySelector('.page-all');
 
     return {
       type: 'discover',
       title: pageTitle(),
       uri: location.href,
-      filters: collectFilterGroups(),
+      filters: isTopicRoute ? [] : collectFilterGroups(),
       items,
-      spotlight: collectComicCards(
-        document,
-        '.dailyRecommendation-box a[href*="/comic/"]',
-      ),
+      spotlight: isTopicRoute
+        ? []
+        : collectComicCards(
+            document,
+            '.dailyRecommendation-box a[href*="/comic/"]',
+          ),
       pager: {
         currentLabel:
           queryText(pager, '.page-all-item.active a') || '',
@@ -644,8 +727,12 @@ const String _pageExtractionScriptTemplate = r"""
     }
 
     if (type === 'discover') {
+      const hasDiscoverItems =
+        document.querySelectorAll(discoverComicSelector).length > 0 ||
+        document.querySelectorAll(topicListSelector).length > 0 ||
+        document.querySelectorAll(topicDetailSelector).length > 0;
       return (
-        document.querySelectorAll(discoverComicSelector).length === 0 &&
+        !hasDiscoverItems &&
         state.attempts < 18
       );
     }
