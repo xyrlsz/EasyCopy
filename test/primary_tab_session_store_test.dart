@@ -175,6 +175,25 @@ void main() {
   );
 
   test(
+    'profile subview routes keep detail navigation returning to the subview',
+    () {
+      final PrimaryTabSessionStore store = buildStore();
+
+      store.push(
+        3,
+        Uri.parse('https://example.com/person/home?view=collections'),
+      );
+      store.push(3, Uri.parse('https://example.com/comic/demo'));
+
+      expect(
+        store.pop(3)?.uri,
+        Uri.parse('https://example.com/person/home?view=collections'),
+      );
+      expect(store.pop(3)?.uri, Uri.parse('https://example.com/person/home'));
+    },
+  );
+
+  test(
     'abandonCurrentRequest clears loading ownership on the current route',
     () {
       final PrimaryTabSessionStore store = buildStore();

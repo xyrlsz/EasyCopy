@@ -1,6 +1,8 @@
 import 'package:easy_copy/services/host_manager.dart';
 import 'package:flutter/material.dart';
 
+enum ProfileSubview { root, collections, history }
+
 class AppConfig {
   AppConfig._();
 
@@ -25,7 +27,43 @@ class AppConfig {
   static Uri rewriteToCurrentHost(Uri uri) =>
       hostManager.rewriteToCurrentHost(uri);
 
-  static Uri get profileUri => resolvePath(profilePath);
+  static Uri get profileUri => buildProfileUri();
+
+  static Uri buildProfileUri({ProfileSubview view = ProfileSubview.root}) {
+    final Uri uri = resolvePath(profilePath);
+    final String? queryValue = _profileSubviewQueryValue(view);
+    return uri.replace(
+      queryParameters: queryValue == null
+          ? null
+          : <String, String>{'view': queryValue},
+    );
+  }
+
+  static ProfileSubview profileSubviewForUri(Uri uri) {
+    final Uri normalizedUri = rewriteToCurrentHost(uri);
+    if (!normalizedUri.path.startsWith(profilePath)) {
+      return ProfileSubview.root;
+    }
+    switch (normalizedUri.queryParameters['view']?.trim().toLowerCase()) {
+      case 'collections':
+        return ProfileSubview.collections;
+      case 'history':
+        return ProfileSubview.history;
+      default:
+        return ProfileSubview.root;
+    }
+  }
+
+  static String profileSubviewTitle(ProfileSubview view) {
+    switch (view) {
+      case ProfileSubview.root:
+        return '我的';
+      case ProfileSubview.collections:
+        return '我的收藏';
+      case ProfileSubview.history:
+        return '浏览历史';
+    }
+  }
 
   static List<AppDestination> buildDestinations() {
     return <AppDestination>[
@@ -100,6 +138,17 @@ class AppConfig {
       queryParameters: sortedQuery.isEmpty ? null : sortedQuery,
     );
     return normalized.toString();
+  }
+
+  static String? _profileSubviewQueryValue(ProfileSubview view) {
+    switch (view) {
+      case ProfileSubview.root:
+        return null;
+      case ProfileSubview.collections:
+        return 'collections';
+      case ProfileSubview.history:
+        return 'history';
+    }
   }
 }
 

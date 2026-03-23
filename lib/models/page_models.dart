@@ -953,6 +953,32 @@ class ProfilePageData extends EasyCopyPage {
   final List<ProfileHistoryItem> history;
   final String message;
 
+  ProfilePageData copyWith({
+    String? title,
+    String? uri,
+    bool? isLoggedIn,
+    ProfileUserData? user,
+    bool clearUser = false,
+    ProfileHistoryItem? continueReading,
+    bool clearContinueReading = false,
+    List<ProfileLibraryItem>? collections,
+    List<ProfileHistoryItem>? history,
+    String? message,
+  }) {
+    return ProfilePageData(
+      title: title ?? this.title,
+      uri: uri ?? this.uri,
+      isLoggedIn: isLoggedIn ?? this.isLoggedIn,
+      user: clearUser ? null : (user ?? this.user),
+      continueReading: clearContinueReading
+          ? null
+          : (continueReading ?? this.continueReading),
+      collections: collections ?? this.collections,
+      history: history ?? this.history,
+      message: message ?? this.message,
+    );
+  }
+
   @override
   Map<String, Object?> toJson() {
     return <String, Object?>{

@@ -1,3 +1,4 @@
+import 'package:easy_copy/config/app_config.dart';
 import 'package:easy_copy/models/app_preferences.dart';
 import 'package:easy_copy/models/page_models.dart';
 import 'package:easy_copy/services/host_manager.dart';
@@ -25,6 +26,8 @@ void main() {
               onLogout: () {},
               onOpenComic: (_) {},
               onOpenHistory: (_) {},
+              onOpenCollections: () {},
+              onOpenHistoryPage: () {},
             ),
           ),
         ),
@@ -55,6 +58,8 @@ void main() {
                 onLogout: () {},
                 onOpenComic: (_) {},
                 onOpenHistory: (_) {},
+                onOpenCollections: () {},
+                onOpenHistoryPage: () {},
                 themePreference: AppThemePreference.system,
                 onThemePreferenceChanged: (AppThemePreference value) {
                   selectedTheme = value;
@@ -92,6 +97,8 @@ void main() {
                 onLogout: () {},
                 onOpenComic: (_) {},
                 onOpenHistory: (_) {},
+                onOpenCollections: () {},
+                onOpenHistoryPage: () {},
                 afterContinueReading: const Text('下载管理'),
               ),
             ),
@@ -121,6 +128,8 @@ void main() {
               onLogout: () {},
               onOpenComic: (_) {},
               onOpenHistory: (_) {},
+              onOpenCollections: () {},
+              onOpenHistoryPage: () {},
               onOpenCachedComic: (String href) {
                 openedCachedComic = href;
               },
@@ -160,6 +169,8 @@ void main() {
     'ProfilePageView renders native profile sections when logged in',
     (WidgetTester tester) async {
       int logoutTaps = 0;
+      int openedCollections = 0;
+      int openedHistoryPage = 0;
       String? openedComic;
       ProfileHistoryItem? openedHistory;
 
@@ -215,16 +226,32 @@ void main() {
                 onOpenHistory: (ProfileHistoryItem item) {
                   openedHistory = item;
                 },
+                onOpenCollections: () {
+                  openedCollections += 1;
+                },
+                onOpenHistoryPage: () {
+                  openedHistoryPage += 1;
+                },
               ),
             ),
           ),
         ),
       );
 
+      final SemanticsHandle semantics = tester.ensureSemantics();
       expect(find.text('演示用户'), findsOneWidget);
       expect(find.text('继续阅读'), findsOneWidget);
       expect(find.text('我的收藏'), findsOneWidget);
       expect(find.text('浏览历史'), findsOneWidget);
+
+      await tester.tap(find.bySemanticsLabel('查看全部收藏'));
+      await tester.pumpAndSettle();
+      expect(openedCollections, 1);
+
+      await tester.ensureVisible(find.bySemanticsLabel('查看全部历史'));
+      await tester.tap(find.bySemanticsLabel('查看全部历史'));
+      await tester.pumpAndSettle();
+      expect(openedHistoryPage, 1);
 
       await tester.ensureVisible(find.text('第10话'));
       await tester.tap(find.text('第10话'));
@@ -240,8 +267,109 @@ void main() {
       await tester.tap(find.byIcon(Icons.logout_rounded));
       await tester.pumpAndSettle();
       expect(logoutTaps, 1);
+      semantics.dispose();
     },
   );
+
+  testWidgets('ProfilePageView renders collections subview in place', (
+    WidgetTester tester,
+  ) async {
+    String? openedComic;
+
+    final ProfilePageData page = ProfilePageData(
+      title: '我的',
+      uri: 'https://www.2026copy.com/person/home?view=collections',
+      isLoggedIn: true,
+      user: const ProfileUserData(userId: '42', username: 'demo_user'),
+      collections: const <ProfileLibraryItem>[
+        ProfileLibraryItem(
+          title: '收藏作品',
+          coverUrl: '',
+          href: 'https://www.2026copy.com/comic/favorite',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: ProfilePageView(
+              page: page,
+              activeSubview: ProfileSubview.collections,
+              onAuthenticate: () {},
+              onLogout: () {},
+              onOpenComic: (String href) {
+                openedComic = href;
+              },
+              onOpenHistory: (_) {},
+              onOpenCollections: () {},
+              onOpenHistoryPage: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('我的收藏'), findsOneWidget);
+    expect(find.text('共 1 部漫画'), findsOneWidget);
+    expect(find.text('收藏作品'), findsOneWidget);
+    expect(find.text('继续阅读'), findsNothing);
+    await tester.tap(find.text('收藏作品'));
+    await tester.pumpAndSettle();
+    expect(openedComic, 'https://www.2026copy.com/comic/favorite');
+  });
+
+  testWidgets('ProfilePageView renders history subview in place', (
+    WidgetTester tester,
+  ) async {
+    String? openedComic;
+
+    final ProfilePageData page = ProfilePageData(
+      title: '我的',
+      uri: 'https://www.2026copy.com/person/home?view=history',
+      isLoggedIn: true,
+      user: const ProfileUserData(userId: '42', username: 'demo_user'),
+      history: const <ProfileHistoryItem>[
+        ProfileHistoryItem(
+          title: '最近阅读',
+          coverUrl: '',
+          comicHref: 'https://www.2026copy.com/comic/recent',
+          chapterLabel: '第3话',
+          chapterHref: 'https://www.2026copy.com/comic/recent/chapter/3',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: ProfilePageView(
+              page: page,
+              activeSubview: ProfileSubview.history,
+              onAuthenticate: () {},
+              onLogout: () {},
+              onOpenComic: (String href) {
+                openedComic = href;
+              },
+              onOpenHistory: (_) {},
+              onOpenCollections: () {},
+              onOpenHistoryPage: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('浏览历史'), findsOneWidget);
+    expect(find.text('共 1 条记录'), findsOneWidget);
+    expect(find.text('最近阅读'), findsOneWidget);
+    expect(find.text('我的收藏'), findsNothing);
+    await tester.tap(find.text('最近阅读'));
+    await tester.pumpAndSettle();
+    expect(openedComic, 'https://www.2026copy.com/comic/recent');
+  });
 
   testWidgets('ProfilePageView renders host settings and forwards actions', (
     WidgetTester tester,
@@ -288,6 +416,8 @@ void main() {
               onLogout: () {},
               onOpenComic: (_) {},
               onOpenHistory: (_) {},
+              onOpenCollections: () {},
+              onOpenHistoryPage: () {},
               currentHost: 'beta.example',
               candidateHosts: const <String>[
                 'alpha.example',

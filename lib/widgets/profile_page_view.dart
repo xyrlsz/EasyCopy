@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:easy_copy/config/app_config.dart';
 import 'package:easy_copy/models/app_preferences.dart';
 import 'package:easy_copy/models/page_models.dart';
 import 'package:easy_copy/services/host_manager.dart';
@@ -17,6 +18,8 @@ class ProfilePageView extends StatelessWidget {
     required this.onLogout,
     required this.onOpenComic,
     required this.onOpenHistory,
+    required this.onOpenCollections,
+    required this.onOpenHistoryPage,
     this.onOpenCachedComic,
     this.onDeleteCachedComic,
     this.currentHost = '',
@@ -30,6 +33,7 @@ class ProfilePageView extends StatelessWidget {
     this.onThemePreferenceChanged,
     this.afterContinueReading,
     this.cachedComicCards = const <ComicCardData>[],
+    this.activeSubview = ProfileSubview.root,
     super.key,
   });
 
@@ -38,6 +42,8 @@ class ProfilePageView extends StatelessWidget {
   final VoidCallback onLogout;
   final ValueChanged<String> onOpenComic;
   final ValueChanged<ProfileHistoryItem> onOpenHistory;
+  final VoidCallback onOpenCollections;
+  final VoidCallback onOpenHistoryPage;
   final ValueChanged<String>? onOpenCachedComic;
   final ValueChanged<String>? onDeleteCachedComic;
   final String currentHost;
@@ -51,6 +57,7 @@ class ProfilePageView extends StatelessWidget {
   final ValueChanged<AppThemePreference>? onThemePreferenceChanged;
   final Widget? afterContinueReading;
   final List<ComicCardData> cachedComicCards;
+  final ProfileSubview activeSubview;
 
   @override
   Widget build(BuildContext context) {
@@ -64,6 +71,40 @@ class ProfilePageView extends StatelessWidget {
     final List<ComicCardData> historyCards = page.history
         .map(_historyCardData)
         .toList(growable: false);
+
+    if (page.isLoggedIn && page.user != null) {
+      switch (activeSubview) {
+        case ProfileSubview.collections:
+          return Column(
+            children: <Widget>[
+              _buildComicCollectionSection(
+                context,
+                title: '我的收藏',
+                summary: '共 ${collectionCards.length} 部漫画',
+                items: collectionCards,
+                emptyMessage: '还没有收藏的漫画。',
+                onTap: onOpenComic,
+              ),
+            ],
+          );
+        case ProfileSubview.history:
+          return Column(
+            children: <Widget>[
+              _buildComicCollectionSection(
+                context,
+                title: '浏览历史',
+                summary: '共 ${historyCards.length} 条记录',
+                items: historyCards,
+                emptyMessage: '还没有浏览历史。',
+                onTap: onOpenComic,
+              ),
+            ],
+          );
+        case ProfileSubview.root:
+          break;
+      }
+    }
+
     final List<Widget> sections = <Widget>[
       page.isLoggedIn && page.user != null
           ? _buildUserCard(context, page.user!)
@@ -173,16 +214,7 @@ class ProfilePageView extends StatelessWidget {
           title: '我的收藏',
           action: _SectionActionButton(
             semanticLabel: '查看全部收藏',
-            onTap: () {
-              _openComicCollectionPage(
-                context,
-                title: '我的收藏',
-                summary: '共 ${collectionCards.length} 部漫画',
-                items: collectionCards,
-                emptyMessage: '还没有收藏的漫画。',
-                onTap: onOpenComic,
-              );
-            },
+            onTap: onOpenCollections,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -219,16 +251,7 @@ class ProfilePageView extends StatelessWidget {
           title: '浏览历史',
           action: _SectionActionButton(
             semanticLabel: '查看全部历史',
-            onTap: () {
-              _openComicCollectionPage(
-                context,
-                title: '浏览历史',
-                summary: '共 ${historyCards.length} 条记录',
-                items: historyCards,
-                emptyMessage: '还没有浏览历史。',
-                onTap: onOpenComic,
-              );
-            },
+            onTap: onOpenHistoryPage,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -278,6 +301,40 @@ class ProfilePageView extends StatelessWidget {
       secondaryText: item.visitedAt,
       coverUrl: item.coverUrl,
       href: item.comicHref,
+    );
+  }
+
+  Widget _buildComicCollectionSection(
+    BuildContext context, {
+    required String title,
+    required String summary,
+    required List<ComicCardData> items,
+    required String emptyMessage,
+    required ValueChanged<String> onTap,
+    ValueChanged<String>? onLongPress,
+  }) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    return _SectionCard(
+      title: title,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            summary,
+            style: TextStyle(
+              color: colorScheme.onSurface.withValues(alpha: 0.7),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 16),
+          ComicGrid(
+            items: items,
+            onTap: onTap,
+            onLongPress: onLongPress,
+            emptyMessage: emptyMessage,
+          ),
+        ],
+      ),
     );
   }
 

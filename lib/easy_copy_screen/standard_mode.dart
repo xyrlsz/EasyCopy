@@ -297,6 +297,9 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
               : item.comicHref;
           _navigateToHref(targetHref);
         },
+        onOpenCollections: () =>
+            _openProfileSubview(ProfileSubview.collections),
+        onOpenHistoryPage: () => _openProfileSubview(ProfileSubview.history),
         currentHost: _hostManager.currentHost,
         candidateHosts: _hostManager.candidateHosts,
         hostSnapshot: _hostManager.probeSnapshot,
@@ -310,6 +313,7 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
         },
         afterContinueReading: _buildDownloadManagementEntry(),
         cachedComicCards: _cachedComicCardsForProfile(),
+        activeSubview: AppConfig.profileSubviewForUri(_currentUri),
         onOpenCachedComic: _openCachedComicFromProfile,
         onDeleteCachedComic: _deleteCachedComicFromProfile,
       ),

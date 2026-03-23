@@ -9,6 +9,40 @@ void main() {
     );
   });
 
+  test('profile subview helpers build and parse internal profile routes', () {
+    expect(
+      AppConfig.buildProfileUri().toString(),
+      'https://www.2026copy.com/person/home',
+    );
+    expect(
+      AppConfig.buildProfileUri(view: ProfileSubview.collections).toString(),
+      'https://www.2026copy.com/person/home?view=collections',
+    );
+    expect(
+      AppConfig.buildProfileUri(view: ProfileSubview.history).toString(),
+      'https://www.2026copy.com/person/home?view=history',
+    );
+    expect(
+      AppConfig.profileSubviewForUri(
+        Uri.parse('https://www.2026copy.com/person/home?view=collections'),
+      ),
+      ProfileSubview.collections,
+    );
+    expect(
+      AppConfig.profileSubviewForUri(
+        Uri.parse('https://www.2026copy.com/person/home?view=history'),
+      ),
+      ProfileSubview.history,
+    );
+    expect(
+      AppConfig.profileSubviewForUri(
+        Uri.parse('https://www.2026copy.com/person/home?view=unknown'),
+      ),
+      ProfileSubview.root,
+    );
+    expect(AppConfig.profileSubviewTitle(ProfileSubview.collections), '我的收藏');
+  });
+
   test('isAllowedNavigationUri blocks external domains and schemes', () {
     expect(
       AppConfig.isAllowedNavigationUri(
@@ -31,6 +65,12 @@ void main() {
     expect(tabIndexForUri(Uri.parse('https://www.2026copy.com/')), 0);
     expect(tabIndexForUri(Uri.parse('https://www.2026copy.com/comic/demo')), 1);
     expect(tabIndexForUri(Uri.parse('https://www.2026copy.com/rank/day')), 2);
+    expect(
+      tabIndexForUri(
+        Uri.parse('https://www.2026copy.com/person/home?view=history'),
+      ),
+      3,
+    );
     expect(
       tabIndexForUri(
         Uri.parse('https://www.2026copy.com/web/login?url=person/home'),

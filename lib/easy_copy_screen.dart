@@ -1756,8 +1756,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     NavigationRequestContext? requestContext,
     int? targetTabIndex,
     bool switchToTab = true,
+    Uri? visibleUri,
   }) {
-    final Uri pageUri = AppConfig.rewriteToCurrentHost(Uri.parse(page.uri));
+    final EasyCopyPage resolvedPage = _pageForVisibleUri(page, visibleUri);
+    final Uri pageUri = AppConfig.rewriteToCurrentHost(
+      Uri.parse(resolvedPage.uri),
+    );
     final int tabIndex =
         requestContext?.targetTabIndex ??
         targetTabIndex ??
@@ -1777,12 +1781,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       if (switchToTab) {
         _selectedIndex = tabIndex;
       }
-      _tabSessionStore.updatePage(tabIndex, page);
-      if (page is DetailPageData) {
+      _tabSessionStore.updatePage(tabIndex, resolvedPage);
+      if (resolvedPage is DetailPageData) {
         _syncDetailChapterState(
-          page,
+          resolvedPage,
           forceReset:
-              previousPage is! DetailPageData || previousPage.uri != page.uri,
+              previousPage is! DetailPageData ||
+              previousPage.uri != resolvedPage.uri,
         );
       }
     }, syncSearch: switchToTab || tabIndex == _selectedIndex);
@@ -1791,8 +1796,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (tabIndex != _selectedIndex) {
       return true;
     }
-    if (page is ReaderPageData) {
-      _handleReaderPageLoaded(page, previousUri: previousReaderUri);
+    if (resolvedPage is ReaderPageData) {
+      _handleReaderPageLoaded(resolvedPage, previousUri: previousReaderUri);
       return true;
     }
     final PrimaryTabRouteEntry entry = _tabSessionStore.currentEntry(tabIndex);
@@ -1802,6 +1807,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       routeKey: entry.routeKey,
     );
     return true;
+  }
+
+  EasyCopyPage _pageForVisibleUri(EasyCopyPage page, Uri? visibleUri) {
+    if (visibleUri == null) {
+      return page;
+    }
+    final Uri normalizedVisibleUri = AppConfig.rewriteToCurrentHost(visibleUri);
+    if (page is ProfilePageData && _isProfileUri(normalizedVisibleUri)) {
+      return page.copyWith(uri: normalizedVisibleUri.toString());
+    }
+    return page;
   }
 
   void _failPendingPageLoad(String message) {
@@ -1857,6 +1873,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     }
     if (_isProfileUri(targetUri)) {
       await _loadProfilePage(
+        targetUri: targetUri,
         forceRefresh: bypassCache,
         historyMode: historyMode,
         preserveVisiblePage: preserveVisiblePage,
@@ -2070,6 +2087,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     required PageQueryKey key,
     required CachedPageEnvelope cachedEntry,
     required NavigationRequestContext requestContext,
+    Uri? visibleUri,
   }) async {
     try {
       await _pageRepository.revalidate(
@@ -2093,6 +2111,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
           switchToTab: _shouldActivateAsyncResultTab(
             requestContext.targetTabIndex,
           ),
+          visibleUri: visibleUri,
         );
         return;
       }
@@ -2105,6 +2124,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }
 
   Future<void> _loadProfilePage({
+    Uri? targetUri,
     bool forceRefresh = false,
     bool preserveVisiblePage = false,
     NavigationIntent historyMode = NavigationIntent.push,
@@ -2113,10 +2133,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (!preserveVisiblePage) {
       _resetStandardScrollPosition();
     }
+    final Uri resolvedTargetUri = AppConfig.rewriteToCurrentHost(
+      targetUri ?? AppConfig.profileUri,
+    );
     final Uri profileUri = AppConfig.profileUri;
     const int profileTabIndex = 3;
     final NavigationRequestContext requestContext = _prepareRouteEntry(
-      profileUri,
+      resolvedTargetUri,
       targetTabIndex: profileTabIndex,
       intent: historyMode,
       preserveVisiblePage: preserveVisiblePage,
@@ -2139,6 +2162,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
           switchToTab: _shouldActivateAsyncResultTab(
             requestContext.targetTabIndex,
           ),
+          visibleUri: resolvedTargetUri,
         );
         if (!cachedHit.envelope.isSoftExpired(DateTime.now())) {
           return;
@@ -2152,6 +2176,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
             requestContext: requestContext.copyWith(
               sourceKind: NavigationRequestSourceKind.revalidate,
             ),
+            visibleUri: resolvedTargetUri,
           ),
         );
         return;
@@ -2170,6 +2195,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         switchToTab: _shouldActivateAsyncResultTab(
           requestContext.targetTabIndex,
         ),
+        visibleUri: resolvedTargetUri,
       );
     } catch (error) {
       await _handlePageLoadFailure(error, requestContext: requestContext);
@@ -2221,6 +2247,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (page is ProfilePageData ||
         (page == null && _isProfileUri(_currentUri))) {
       await _loadProfilePage(
+        targetUri: _currentUri,
         forceRefresh: true,
         preserveVisiblePage: _page != null,
         historyMode: NavigationIntent.preserve,
@@ -2241,6 +2268,16 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       _targetUriForPrimaryTab(0, resetToRoot: true),
       preserveVisiblePage: true,
       historyMode: NavigationIntent.resetToRoot,
+    );
+  }
+
+  void _openProfileSubview(ProfileSubview view) {
+    unawaited(
+      _loadProfilePage(
+        targetUri: AppConfig.buildProfileUri(view: view),
+        preserveVisiblePage: _page is ProfilePageData,
+        historyMode: NavigationIntent.push,
+      ),
     );
   }
 
@@ -3407,7 +3444,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
 
   bool get _shouldShowSearchBar {
     final EasyCopyPage? page = _page;
-    if (page is ProfilePageData || page is DetailPageData) {
+    if (page is ProfilePageData ||
+        page is DetailPageData ||
+        _isProfileUri(_currentUri)) {
       return false;
     }
     return !_isDetailRoute;
@@ -3430,6 +3469,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   bool get _shouldShowBackButton {
     final EasyCopyPage? page = _page;
     if (_isSecondaryDiscoverRoute) {
+      return true;
+    }
+    if (_isSecondaryProfileRoute) {
       return true;
     }
     if (page is DetailPageData || page is UnknownPageData || _isDetailRoute) {
@@ -3463,7 +3505,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     return _isDiscoverUri(_currentUri) && !_isPrimaryDiscoverUri(_currentUri);
   }
 
+  bool get _isSecondaryProfileRoute {
+    return _isProfileUri(_currentUri) &&
+        AppConfig.profileSubviewForUri(_currentUri) != ProfileSubview.root;
+  }
+
   String get _pageTitle {
+    if (_isProfileUri(_currentUri)) {
+      return AppConfig.profileSubviewTitle(
+        AppConfig.profileSubviewForUri(_currentUri),
+      );
+    }
     final EasyCopyPage? page = _page;
     if (page == null) {
       if (_isDetailRoute) {
