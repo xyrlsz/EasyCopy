@@ -28,6 +28,30 @@ String _stringValue(Object? value, {String fallback = ''}) {
   return fallback;
 }
 
+int? _firstPositiveInt(String value) {
+  final Match? match = RegExp(r'(\d+)').firstMatch(value);
+  if (match == null) {
+    return null;
+  }
+  final int? parsed = int.tryParse(match.group(1)!);
+  if (parsed == null || parsed < 1) {
+    return null;
+  }
+  return parsed;
+}
+
+int? _pagerTotalPageCount(String value) {
+  final Match? pageMatch = RegExp(r'(\d+)\s*页').firstMatch(value);
+  if (pageMatch != null) {
+    return int.tryParse(pageMatch.group(1)!);
+  }
+  final Match? slashMatch = RegExp(r'/\s*(\d+)').firstMatch(value);
+  if (slashMatch != null) {
+    return int.tryParse(slashMatch.group(1)!);
+  }
+  return _firstPositiveInt(value);
+}
+
 bool _boolValue(Object? value, {bool fallback = false}) {
   if (value is bool) {
     return value;
@@ -262,6 +286,10 @@ class PagerData {
   final String totalLabel;
   final String prevHref;
   final String nextHref;
+
+  int? get currentPageNumber => _firstPositiveInt(currentLabel);
+
+  int? get totalPageCount => _pagerTotalPageCount(totalLabel);
 
   bool get hasPrev => prevHref.isNotEmpty;
   bool get hasNext => nextHref.isNotEmpty;

@@ -96,4 +96,19 @@ void main() {
       'https://www.2026copy.com/search?q=%E6%B5%B7%E8%B4%BC%E7%8E%8B&page=3&q_type=author',
     );
   });
+
+  test('buildPagedUri updates and clears the page query parameter', () {
+    final Uri searchPage = AppConfig.buildPagedUri(
+      Uri.parse('https://www.2026copy.com/search?q=robot&q_type=author'),
+      page: 5,
+    );
+    expect(searchPage.queryParameters['q'], 'robot');
+    expect(searchPage.queryParameters['q_type'], 'author');
+    expect(searchPage.queryParameters['page'], '5');
+
+    final Uri firstPage = AppConfig.buildPagedUri(searchPage, page: 1);
+    expect(firstPage.queryParameters['q'], 'robot');
+    expect(firstPage.queryParameters['q_type'], 'author');
+    expect(firstPage.queryParameters.containsKey('page'), isFalse);
+  });
 }

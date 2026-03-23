@@ -238,16 +238,50 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
       href,
       currentUri: _currentUri,
     );
+    _moveStandardPagerViewportToTop();
+    if (_currentEntry.routeKey == AppConfig.routeKeyForUri(targetUri)) {
+      return;
+    }
     await _loadUri(
       targetUri,
       preserveVisiblePage: true,
       historyMode: NavigationIntent.preserve,
     );
-    if (!mounted ||
-        _currentEntry.routeKey != AppConfig.routeKeyForUri(targetUri)) {
+  }
+
+  Future<void> _jumpDiscoverToPage(
+    DiscoverPageData page,
+    int targetPage,
+  ) async {
+    if (targetPage < 1) {
+      _showSnackBar('请输入有效页码');
       return;
     }
-    await _scrollCurrentStandardPageToTop();
+    final int? totalPageCount = page.pager.totalPageCount;
+    if (totalPageCount != null && targetPage > totalPageCount) {
+      _showSnackBar('页码超出范围，最多 $totalPageCount 页');
+      return;
+    }
+    final Uri targetUri = AppConfig.buildPagedUri(
+      Uri.parse(page.uri),
+      page: targetPage,
+    );
+    _moveStandardPagerViewportToTop();
+    if (_currentEntry.routeKey == AppConfig.routeKeyForUri(targetUri)) {
+      return;
+    }
+    await _loadUri(
+      targetUri,
+      preserveVisiblePage: true,
+      historyMode: NavigationIntent.preserve,
+    );
+  }
+
+  void _moveStandardPagerViewportToTop() {
+    _tabSessionStore.updateScroll(_selectedIndex, _currentEntry.routeKey, 0);
+    if (_standardScrollController.hasClients) {
+      _standardScrollController.jumpTo(0);
+    }
   }
 
   List<Widget> _buildProfileSections(ProfilePageData page) {
@@ -1246,6 +1280,9 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
                       unawaited(_openDiscoverPagerHref(page.pager.nextHref));
                     }
                   : null,
+              onJumpToPage: (int targetPage) {
+                unawaited(_jumpDiscoverToPage(page, targetPage));
+              },
             ),
           ),
         ),

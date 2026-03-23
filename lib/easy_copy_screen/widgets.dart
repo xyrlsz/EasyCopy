@@ -563,53 +563,160 @@ class _LinkChip extends StatelessWidget {
   }
 }
 
-class _PagerCard extends StatelessWidget {
+class _PagerCard extends StatefulWidget {
   const _PagerCard({
     required this.pager,
     required this.onPrev,
     required this.onNext,
+    this.onJumpToPage,
   });
 
   final PagerData pager;
   final VoidCallback? onPrev;
   final VoidCallback? onNext;
+  final ValueChanged<int>? onJumpToPage;
+
+  @override
+  State<_PagerCard> createState() => _PagerCardState();
+}
+
+class _PagerCardState extends State<_PagerCard> {
+  late final TextEditingController _pageController;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = TextEditingController(
+      text: _pageTextForPager(widget.pager),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _PagerCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.pager.currentLabel != widget.pager.currentLabel ||
+        oldWidget.pager.totalLabel != widget.pager.totalLabel) {
+      _pageController.value = TextEditingValue(
+        text: _pageTextForPager(widget.pager),
+        selection: TextSelection.collapsed(
+          offset: _pageTextForPager(widget.pager).length,
+        ),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  String _pageTextForPager(PagerData pager) {
+    return pager.currentPageNumber?.toString() ?? pager.currentLabel;
+  }
+
+  void _runAction(VoidCallback? action) {
+    FocusScope.of(context).unfocus();
+    action?.call();
+  }
+
+  void _submitJump() {
+    final int? targetPage = int.tryParse(_pageController.text.trim());
+    if (targetPage == null) {
+      return;
+    }
+    _runAction(() => widget.onJumpToPage?.call(targetPage));
+  }
 
   @override
   Widget build(BuildContext context) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final int? totalPageCount = widget.pager.totalPageCount;
     return AppSurfaceCard(
       padding: const EdgeInsets.all(18),
-      child: Row(
+      child: Column(
         children: <Widget>[
-          Expanded(
-            child: FilledButton.tonal(
-              onPressed: onPrev,
-              child: const Text('上一页'),
-            ),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: FilledButton.tonal(
+                  onPressed: widget.onPrev == null
+                      ? null
+                      : () => _runAction(widget.onPrev),
+                  child: const Text('上一页'),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Column(
+                  children: <Widget>[
+                    Text(
+                      widget.pager.currentLabel.isEmpty
+                          ? '--'
+                          : widget.pager.currentLabel,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    if (widget.pager.totalLabel.isNotEmpty)
+                      Text(
+                        widget.pager.totalLabel,
+                        style: TextStyle(
+                          color: colorScheme.onSurface.withValues(alpha: 0.64),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: FilledButton(
+                  onPressed: widget.onNext == null
+                      ? null
+                      : () => _runAction(widget.onNext),
+                  child: const Text('下一页'),
+                ),
+              ),
+            ],
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            child: Column(
-              children: <Widget>[
-                Text(
-                  pager.currentLabel.isEmpty ? '--' : pager.currentLabel,
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
+          const SizedBox(height: 14),
+          Wrap(
+            alignment: WrapAlignment.center,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              SizedBox(
+                width: 96,
+                child: TextField(
+                  controller: _pageController,
+                  enabled: widget.onJumpToPage != null,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.go,
+                  inputFormatters: <TextInputFormatter>[
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  onSubmitted: (_) => _submitJump(),
+                  decoration: const InputDecoration(
+                    labelText: '页码',
+                    isDense: true,
+                    border: OutlineInputBorder(),
                   ),
                 ),
-                if (pager.totalLabel.isNotEmpty)
-                  Text(
-                    pager.totalLabel,
-                    style: TextStyle(
-                      color: colorScheme.onSurface.withValues(alpha: 0.64),
-                    ),
+              ),
+              FilledButton.tonal(
+                onPressed: widget.onJumpToPage == null ? null : _submitJump,
+                child: const Text('跳转'),
+              ),
+              if (totalPageCount != null)
+                Text(
+                  '共 $totalPageCount 页',
+                  style: TextStyle(
+                    color: colorScheme.onSurface.withValues(alpha: 0.68),
+                    fontWeight: FontWeight.w700,
                   ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: FilledButton(onPressed: onNext, child: const Text('下一页')),
+                ),
+            ],
           ),
         ],
       ),

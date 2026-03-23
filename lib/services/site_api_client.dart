@@ -267,7 +267,7 @@ class SiteApiClient {
   }) async {
     await _session.ensureInitialized();
     final int offset = (page - 1) * _searchPageSize;
-    final Uri uri = AppConfig.resolvePath('/api/kb/web/searchcd/comics')
+    final Uri uri = AppConfig.resolvePath('/api/kb/web/searchch/comics')
         .replace(
           queryParameters: <String, String>{
             'offset': '$offset',

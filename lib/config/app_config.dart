@@ -63,6 +63,31 @@ class AppConfig {
     );
   }
 
+  static Uri buildPagedUri(Uri uri, {required int page}) {
+    final Uri normalizedUri = rewriteToCurrentHost(uri);
+    final int normalizedPage = page < 1 ? 1 : page;
+    final Map<String, String> queryParameters = Map<String, String>.from(
+      normalizedUri.queryParameters,
+    );
+    if (normalizedPage <= 1) {
+      queryParameters.remove('page');
+    } else {
+      queryParameters['page'] = '$normalizedPage';
+    }
+    final List<MapEntry<String, String>> sortedQuery =
+        queryParameters.entries.toList(growable: false)..sort((
+          MapEntry<String, String> left,
+          MapEntry<String, String> right,
+        ) {
+          return left.key.compareTo(right.key);
+        });
+    return normalizedUri.replace(
+      queryParameters: sortedQuery.isEmpty
+          ? null
+          : Map<String, String>.fromEntries(sortedQuery),
+    );
+  }
+
   static String routeKeyForUri(Uri uri) {
     final Map<String, String> sortedQuery = Map<String, String>.fromEntries(
       uri.queryParameters.entries.toList()

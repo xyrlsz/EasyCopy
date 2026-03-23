@@ -183,7 +183,7 @@ void main() {
       final SiteApiClient client = SiteApiClient(
         session: session,
         client: MockClient((http.Request request) async {
-          expect(request.url.path, '/api/kb/web/searchcd/comics');
+          expect(request.url.path, '/api/kb/web/searchch/comics');
           expect(request.url.queryParameters['offset'], '12');
           expect(request.url.queryParameters['limit'], '12');
           expect(request.url.queryParameters['q'], '海賊王');
