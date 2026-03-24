@@ -15,6 +15,9 @@ typedef StandardPageFreshLoader =
       NavigationRequestContext? requestContext,
     });
 
+typedef HtmlPageFreshLoader =
+    Future<EasyCopyPage> Function(Uri uri, {required String authScope});
+
 @immutable
 class PageQueryKey {
   const PageQueryKey({required this.routeKey, required this.authScope});
@@ -76,16 +79,23 @@ class PageRepository {
     PageProbeService? probeService,
     SiteApiClient? apiClient,
     required StandardPageFreshLoader standardPageLoader,
+    HtmlPageFreshLoader? htmlPageLoader,
     this.memoryCapacity = 48,
   }) : _cacheStore = cacheStore ?? PageCacheStore.instance,
        _probeService = probeService ?? PageProbeService.instance,
        _apiClient = apiClient ?? SiteApiClient.instance,
-       _standardPageLoader = standardPageLoader;
+       _standardPageLoader = standardPageLoader,
+       _htmlPageLoader =
+           htmlPageLoader ??
+           ((Uri uri, {required String authScope}) {
+             return standardPageLoader(uri, authScope: authScope);
+           });
 
   final PageCacheStore _cacheStore;
   final PageProbeService _probeService;
   final SiteApiClient _apiClient;
   final StandardPageFreshLoader _standardPageLoader;
+  final HtmlPageFreshLoader _htmlPageLoader;
   final int memoryCapacity;
 
   final LinkedHashMap<PageQueryKey, CachedPageHit> _memoryCache =
@@ -205,6 +215,14 @@ class PageRepository {
             page: int.tryParse(uri.queryParameters['page'] ?? '') ?? 1,
             qType: uri.queryParameters['q_type'] ?? '',
           )
+        : _isReaderChapterUri(uri)
+        ? await _standardPageLoader(
+            uri,
+            authScope: requestedKey.authScope,
+            requestContext: requestContext,
+          )
+        : _isHtmlStandardUri(uri)
+        ? await _htmlPageLoader(uri, authScope: requestedKey.authScope)
         : await _standardPageLoader(
             uri,
             authScope: requestedKey.authScope,
@@ -314,6 +332,22 @@ class PageRepository {
   bool _isDetailUri(Uri uri) {
     final String path = uri.path.toLowerCase();
     return path.startsWith('/comic/') && !path.contains('/chapter/');
+  }
+
+  bool _isReaderChapterUri(Uri uri) {
+    return uri.path.toLowerCase().contains('/chapter/');
+  }
+
+  bool _isHtmlStandardUri(Uri uri) {
+    final String path = uri.path.toLowerCase();
+    return path == '/' ||
+        path.startsWith('/comics') ||
+        path.startsWith('/filter') ||
+        path.startsWith('/topic') ||
+        path.startsWith('/recommend') ||
+        path.startsWith('/newest') ||
+        path.startsWith('/rank') ||
+        _isDetailUri(uri);
   }
 
   bool _shouldForceFreshRevalidate(Uri uri, PageQueryKey key) {

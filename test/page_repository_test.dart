@@ -425,6 +425,161 @@ void main() {
       expect(searchLoadCount, 1);
     },
   );
+
+  test(
+    'standard pages use the html loader while chapter pages keep webview loader',
+    () async {
+      int standardLoaderCount = 0;
+      int htmlLoaderCount = 0;
+      final PageRepository repository = PageRepository(
+        cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
+        probeService: _buildProbeService('<html></html>'),
+        apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
+        standardPageLoader:
+            (
+              Uri uri, {
+              required String authScope,
+              NavigationRequestContext? requestContext,
+            }) async {
+              standardLoaderCount += 1;
+              return ReaderPageData(
+                title: '阅读',
+                uri: uri.toString(),
+                comicTitle: 'Demo',
+                chapterTitle: '第1话',
+                progressLabel: '1/1',
+                imageUrls: const <String>[],
+                prevHref: '',
+                nextHref: '',
+                catalogHref: 'https://example.com/comic/demo',
+              );
+            },
+        htmlPageLoader: (Uri uri, {required String authScope}) async {
+          htmlLoaderCount += 1;
+          return HomePageData(
+            title: '首页',
+            uri: uri.toString(),
+            heroBanners: const <HeroBannerData>[],
+            sections: const <ComicSectionData>[],
+          );
+        },
+      );
+
+      final EasyCopyPage standardPage = await repository.loadFresh(
+        Uri.parse('https://example.com/comics'),
+        authScope: 'guest',
+      );
+      final EasyCopyPage chapterPage = await repository.loadFresh(
+        Uri.parse('https://example.com/comic/demo/chapter/1'),
+        authScope: 'guest',
+      );
+
+      expect(standardPage, isA<HomePageData>());
+      expect(chapterPage, isA<ReaderPageData>());
+      expect(htmlLoaderCount, 1);
+      expect(standardLoaderCount, 1);
+    },
+  );
+
+  test(
+    'html loader failure on standard pages does not fall back to webview loader',
+    () async {
+      int standardLoaderCount = 0;
+      int htmlLoaderCount = 0;
+      final PageRepository repository = PageRepository(
+        cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
+        probeService: _buildProbeService('<html></html>'),
+        apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
+        standardPageLoader:
+            (
+              Uri uri, {
+              required String authScope,
+              NavigationRequestContext? requestContext,
+            }) async {
+              standardLoaderCount += 1;
+              return HomePageData(
+                title: 'legacy',
+                uri: uri.toString(),
+                heroBanners: const <HeroBannerData>[],
+                sections: const <ComicSectionData>[],
+              );
+            },
+        htmlPageLoader: (Uri uri, {required String authScope}) async {
+          htmlLoaderCount += 1;
+          throw StateError('html parse failed');
+        },
+      );
+
+      await expectLater(
+        repository.loadFresh(
+          Uri.parse('https://example.com/recommend'),
+          authScope: 'guest',
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(htmlLoaderCount, 1);
+      expect(standardLoaderCount, 0);
+    },
+  );
+
+  test(
+    'standard page redirects are cached under the final route key from the html loader',
+    () async {
+      int standardLoaderCount = 0;
+      int htmlLoaderCount = 0;
+      final PageRepository repository = PageRepository(
+        cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
+        probeService: _buildProbeService('<html></html>'),
+        apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
+        standardPageLoader:
+            (
+              Uri uri, {
+              required String authScope,
+              NavigationRequestContext? requestContext,
+            }) async {
+              standardLoaderCount += 1;
+              return HomePageData(
+                title: 'unexpected',
+                uri: uri.toString(),
+                heroBanners: const <HeroBannerData>[],
+                sections: const <ComicSectionData>[],
+              );
+            },
+        htmlPageLoader: (Uri uri, {required String authScope}) async {
+          htmlLoaderCount += 1;
+          return DiscoverPageData(
+            title: '发现',
+            uri: 'https://example.com/comics?page=2',
+            filters: const <FilterGroupData>[],
+            items: const <ComicCardData>[],
+            pager: const PagerData(),
+            spotlight: const <ComicCardData>[],
+          );
+        },
+      );
+
+      final Uri requestedUri = Uri.parse('https://example.com/topic/jump');
+      await repository.loadFresh(requestedUri, authScope: 'guest');
+
+      expect(htmlLoaderCount, 1);
+      expect(standardLoaderCount, 0);
+      expect(
+        await repository.readCached(
+          PageQueryKey.forUri(requestedUri, authScope: 'guest'),
+        ),
+        isNull,
+      );
+      expect(
+        await repository.readCached(
+          PageQueryKey.forUri(
+            Uri.parse('https://example.com/comics?page=2'),
+            authScope: 'guest',
+          ),
+        ),
+        isNotNull,
+      );
+    },
+  );
 }
 
 PageProbeService _buildProbeService(String html, {void Function()? onProbe}) {

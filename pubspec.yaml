@@ -42,6 +42,7 @@ dependencies:
   html: ^0.15.6
   http: ^1.2.2
   path_provider: ^2.1.5
+  pointycastle: ^3.9.1
   webview_flutter: ^4.13.1
 
 dev_dependencies:

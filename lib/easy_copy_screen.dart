@@ -25,6 +25,7 @@ import 'package:easy_copy/services/primary_tab_session_store.dart';
 import 'package:easy_copy/services/reader_platform_bridge.dart';
 import 'package:easy_copy/services/reader_progress_store.dart';
 import 'package:easy_copy/services/site_api_client.dart';
+import 'package:easy_copy/services/site_html_page_loader.dart';
 import 'package:easy_copy/services/site_session.dart';
 import 'package:easy_copy/services/standard_page_load_controller.dart';
 import 'package:easy_copy/services/tab_activation_policy.dart';
@@ -181,6 +182,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     _downloadController = _buildDownloadController();
     _pageRepository = PageRepository(
       standardPageLoader: _loadStandardPageFresh,
+      htmlPageLoader: SiteHtmlPageLoader.instance.loadPage,
     );
     _preferencesController.addListener(_handlePreferencesChanged);
     _standardScrollController.addListener(_handleStandardScroll);
