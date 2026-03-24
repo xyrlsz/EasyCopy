@@ -427,7 +427,7 @@ void main() {
   );
 
   test(
-    'standard pages use the html loader while chapter pages keep webview loader',
+    'standard and chapter pages prefer the html loader when it succeeds',
     () async {
       int standardLoaderCount = 0;
       int htmlLoaderCount = 0;
@@ -442,20 +442,28 @@ void main() {
               NavigationRequestContext? requestContext,
             }) async {
               standardLoaderCount += 1;
-              return ReaderPageData(
-                title: '阅读',
+              return UnknownPageData(
+                title: 'legacy',
                 uri: uri.toString(),
-                comicTitle: 'Demo',
-                chapterTitle: '第1话',
-                progressLabel: '1/1',
-                imageUrls: const <String>[],
-                prevHref: '',
-                nextHref: '',
-                catalogHref: 'https://example.com/comic/demo',
+                message: 'should-not-fallback',
               );
             },
         htmlPageLoader: (Uri uri, {required String authScope}) async {
           htmlLoaderCount += 1;
+          if (uri.path.contains('/chapter/')) {
+            return ReaderPageData(
+              title: '阅读',
+              uri: uri.toString(),
+              comicTitle: 'Demo',
+              chapterTitle: '第1话',
+              progressLabel: '1/1',
+              imageUrls: const <String>['https://example.com/1.jpg'],
+              prevHref: '',
+              nextHref: '',
+              catalogHref: 'https://example.com/comic/demo',
+              contentKey: 'ciphertext',
+            );
+          }
           return HomePageData(
             title: '首页',
             uri: uri.toString(),
@@ -476,8 +484,8 @@ void main() {
 
       expect(standardPage, isA<HomePageData>());
       expect(chapterPage, isA<ReaderPageData>());
-      expect(htmlLoaderCount, 1);
-      expect(standardLoaderCount, 1);
+      expect(htmlLoaderCount, 2);
+      expect(standardLoaderCount, 0);
     },
   );
 
@@ -519,6 +527,51 @@ void main() {
       );
       expect(htmlLoaderCount, 1);
       expect(standardLoaderCount, 0);
+    },
+  );
+
+  test(
+    'reader pages fall back to the standard loader when html loading fails',
+    () async {
+      int standardLoaderCount = 0;
+      int htmlLoaderCount = 0;
+      final PageRepository repository = PageRepository(
+        cacheStore: buildCacheStore(DateTime(2026, 3, 7, 12)),
+        probeService: _buildProbeService('<html></html>'),
+        apiClient: FakeSiteApiClient(_buildLoggedOutProfile),
+        standardPageLoader:
+            (
+              Uri uri, {
+              required String authScope,
+              NavigationRequestContext? requestContext,
+            }) async {
+              standardLoaderCount += 1;
+              return ReaderPageData(
+                title: '阅读',
+                uri: uri.toString(),
+                comicTitle: 'Demo',
+                chapterTitle: '第1话',
+                progressLabel: '1/1',
+                imageUrls: const <String>['https://example.com/1.jpg'],
+                prevHref: '',
+                nextHref: '',
+                catalogHref: 'https://example.com/comic/demo',
+              );
+            },
+        htmlPageLoader: (Uri uri, {required String authScope}) async {
+          htmlLoaderCount += 1;
+          throw StateError('reader html parse failed');
+        },
+      );
+
+      final EasyCopyPage page = await repository.loadFresh(
+        Uri.parse('https://example.com/comic/demo/chapter/1'),
+        authScope: 'guest',
+      );
+
+      expect(page, isA<ReaderPageData>());
+      expect(htmlLoaderCount, 1);
+      expect(standardLoaderCount, 1);
     },
   );
 

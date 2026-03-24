@@ -65,6 +65,7 @@ class SiteHtmlPageParser {
           loadDetailChapterResults: loadDetailChapterResults,
         );
       case EasyCopyPageType.reader:
+        return _buildReaderPage(normalizedUri, html, document);
       case EasyCopyPageType.profile:
       case EasyCopyPageType.unknown:
         throw SiteHtmlPageParseException(
@@ -319,6 +320,77 @@ class SiteHtmlPageParser {
     );
   }
 
+  ReaderPageData _buildReaderPage(Uri uri, String html, dom.Document document) {
+    final String headerText = _queryText(document, 'h4.header');
+    final String pageTitle = _pageTitle(document);
+    final List<String> headerParts = headerText
+        .split('/')
+        .map(_cleanText)
+        .where((String value) => value.isNotEmpty)
+        .toList(growable: false);
+    final List<String> titleParts = pageTitle
+        .split(RegExp(r'\s*-\s*'))
+        .map(_cleanText)
+        .where((String value) => value.isNotEmpty)
+        .toList(growable: false);
+    final String contentKey = _scriptStringValue(html, 'contentKey');
+    final String cct = _scriptStringValue(html, 'cct');
+
+    List<String> imageUrls = _uniqueStrings(
+      _querySelectorAll(document, '.comicContent-list img').map((
+        dom.Element img,
+      ) {
+        return _imageUrl(uri, img);
+      }),
+    );
+    if (imageUrls.isEmpty && contentKey.isNotEmpty && cct.isNotEmpty) {
+      imageUrls = _parseEncryptedReaderImageUrls(
+        uri,
+        contentKey: contentKey,
+        cct: cct,
+      );
+    }
+    if (imageUrls.isEmpty) {
+      throw SiteHtmlPageParseException('阅读页图片解析失败：${uri.path}');
+    }
+
+    final String comicTitle = headerParts.isNotEmpty
+        ? headerParts.first
+        : titleParts.isNotEmpty
+        ? titleParts.first
+        : pageTitle;
+    final String chapterTitle = headerParts.length > 1
+        ? headerParts.skip(1).join('/')
+        : titleParts.length > 1
+        ? titleParts.skip(1).join(' - ')
+        : '';
+
+    return ReaderPageData(
+      title: headerText.isNotEmpty ? headerText : pageTitle,
+      uri: uri.toString(),
+      comicTitle: comicTitle,
+      chapterTitle: chapterTitle,
+      progressLabel: _queryText(document, '.comicContent-footer-txt span'),
+      imageUrls: imageUrls,
+      prevHref: _linkUrl(
+        uri,
+        _querySelector(
+          document,
+          '.comicContent-prev:not(.index):not(.list) a[href]',
+        ),
+      ),
+      nextHref: _linkUrl(
+        uri,
+        _querySelector(document, '.comicContent-next a[href]'),
+      ),
+      catalogHref: _linkUrl(
+        uri,
+        _querySelector(document, '.comicContent-prev.list a[href]'),
+      ),
+      contentKey: contentKey,
+    );
+  }
+
   Future<DetailPageData> _buildDetailPage(
     Uri uri,
     String html,
@@ -437,6 +509,55 @@ class SiteHtmlPageParser {
       return null;
     }
     return DetailChapterRequest(pageUri: uri, slug: slug, ccz: ccz, dnt: dnt);
+  }
+
+  List<String> _parseEncryptedReaderImageUrls(
+    Uri uri, {
+    required String contentKey,
+    required String cct,
+  }) {
+    final String encrypted = _cleanText(contentKey);
+    if (encrypted.length <= 16) {
+      throw SiteHtmlPageParseException('阅读页图片数据为空：${uri.path}');
+    }
+
+    final Uint8List key = Uint8List.fromList(utf8.encode(cct));
+    final Uint8List iv = Uint8List.fromList(
+      utf8.encode(encrypted.substring(0, 16)),
+    );
+    final Uint8List cipherBytes = _decodeCipherText(encrypted.substring(16));
+    final PaddedBlockCipher cipher = PaddedBlockCipherImpl(
+      PKCS7Padding(),
+      CBCBlockCipher(AESEngine()),
+    );
+    cipher.init(
+      false,
+      PaddedBlockCipherParameters<ParametersWithIV<KeyParameter>, Null>(
+        ParametersWithIV<KeyParameter>(KeyParameter(key), iv),
+        null,
+      ),
+    );
+
+    final Uint8List plainBytes = cipher.process(cipherBytes);
+    final Object? decoded = jsonDecode(utf8.decode(plainBytes));
+    final List<String> imageUrls = _uniqueStrings(
+      _listValue(decoded).map((Object? item) {
+        final String rawUrl = item is String
+            ? _cleanText(item)
+            : _stringValue(_asMap(item)['url']);
+        if (rawUrl.isEmpty) {
+          return '';
+        }
+        return AppConfig.resolveNavigationUri(
+          rawUrl,
+          currentUri: uri,
+        ).toString();
+      }),
+    );
+    if (imageUrls.isEmpty) {
+      throw SiteHtmlPageParseException('阅读页图片数据格式异常：${uri.path}');
+    }
+    return imageUrls;
   }
 
   _ParsedDetailChapters _parseEncryptedDetailChapters(
@@ -1037,6 +1158,23 @@ class SiteHtmlPageParser {
 
   String _cleanText(String? value) {
     return (value ?? '').replaceAll(_spacePattern, ' ').trim();
+  }
+
+  String _scriptStringValue(String html, String variableName) {
+    final List<RegExp> patterns = <RegExp>[
+      RegExp("var\\s+$variableName\\s*=\\s*'([^']+)'", caseSensitive: false),
+      RegExp('var\\s+$variableName\\s*=\\s*"([^"]+)"', caseSensitive: false),
+      RegExp("window\\.$variableName\\s*=\\s*'([^']+)'", caseSensitive: false),
+      RegExp('window\\.$variableName\\s*=\\s*"([^"]+)"', caseSensitive: false),
+    ];
+    for (final RegExp pattern in patterns) {
+      final RegExpMatch? match = pattern.firstMatch(html);
+      final String value = _cleanText(match?.group(1));
+      if (value.isNotEmpty) {
+        return value;
+      }
+    }
+    return '';
   }
 
   String _pageTitle(dom.Document document) {

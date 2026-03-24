@@ -90,6 +90,67 @@ void main() {
     );
   });
 
+  test('parses reader pages from encrypted contentKey payloads', () async {
+    const String cct = 'op0zzpvv.nmn.o0p';
+    final String contentKey = _encryptReaderPayload(cct, <Object?>[
+      <String, Object?>{'url': 'https://cdn.example.com/reader/001.jpg'},
+      <String, Object?>{'url': 'https://cdn.example.com/reader/002.jpg'},
+      <String, Object?>{'url': 'https://cdn.example.com/reader/003.jpg'},
+    ]);
+    final String html =
+        '''
+<!DOCTYPE html>
+<html lang="zh-hant">
+  <head>
+    <title>夢醒後的灰 - 第05話 - 拷貝漫畫 拷贝漫画</title>
+  </head>
+  <body>
+    <h4 class="header">夢醒後的灰/第05話</h4>
+    <div class="container-fluid comicContent">
+      <div class="container comic-size-1">
+        <ul class="comicContent-list comic-size-1"></ul>
+      </div>
+    </div>
+    <div class="footer">
+      <div class="comicContent-prev index"><a href="/">首頁</a></div>
+      <div class="comicContent-prev">
+        <a href="/comic/mongxinhoudehui/chapter/prev-id">上一話</a>
+      </div>
+      <div class="comicContent-footer-txt"><span>第6 / 6話</span></div>
+      <div class="comicContent-next">
+        <a href="/comic/mongxinhoudehui/chapter/next-id">下一話</a>
+      </div>
+      <div class="comicContent-prev list"><a href="/comic/mongxinhoudehui">目錄</a></div>
+    </div>
+    <script>
+      var cct = '$cct';
+      var contentKey = '$contentKey';
+    </script>
+  </body>
+</html>
+''';
+
+    final ReaderPageData page =
+        await parser.parsePage(
+              Uri.parse(
+                'https://www.2026copy.com/comic/mongxinhoudehui/chapter/demo-id',
+              ),
+              html,
+            )
+            as ReaderPageData;
+
+    expect(page.title, '夢醒後的灰/第05話');
+    expect(page.comicTitle, '夢醒後的灰');
+    expect(page.chapterTitle, '第05話');
+    expect(page.progressLabel, '第6 / 6話');
+    expect(page.imageUrls, hasLength(3));
+    expect(page.imageUrls.first, 'https://cdn.example.com/reader/001.jpg');
+    expect(page.prevHref, contains('/comic/mongxinhoudehui/chapter/prev-id'));
+    expect(page.nextHref, contains('/comic/mongxinhoudehui/chapter/next-id'));
+    expect(page.catalogHref, 'https://www.2026copy.com/comic/mongxinhoudehui');
+    expect(page.contentKey, contentKey);
+  });
+
   test('parses detail fixture and chapter endpoint payload together', () async {
     final String html = await File(fixturePath('series.html')).readAsString();
     final String encryptedResults = _encryptChapterPayload(
@@ -341,6 +402,29 @@ String _encryptChapterPayload(String ccz, Map<String, Object?> payload) {
     PaddedBlockCipherParameters<ParametersWithIV<KeyParameter>, Null>(
       ParametersWithIV<KeyParameter>(
         KeyParameter(Uint8List.fromList(utf8.encode(ccz))),
+        Uint8List.fromList(utf8.encode(prefix)),
+      ),
+      null,
+    ),
+  );
+
+  final Uint8List encrypted = cipher.process(
+    Uint8List.fromList(utf8.encode(jsonEncode(payload))),
+  );
+  return '$prefix${_hexEncode(encrypted)}';
+}
+
+String _encryptReaderPayload(String cct, List<Object?> payload) {
+  const String prefix = '1234567890abcdef';
+  final PaddedBlockCipher cipher = PaddedBlockCipherImpl(
+    PKCS7Padding(),
+    CBCBlockCipher(AESEngine()),
+  );
+  cipher.init(
+    true,
+    PaddedBlockCipherParameters<ParametersWithIV<KeyParameter>, Null>(
+      ParametersWithIV<KeyParameter>(
+        KeyParameter(Uint8List.fromList(utf8.encode(cct))),
         Uint8List.fromList(utf8.encode(prefix)),
       ),
       null,

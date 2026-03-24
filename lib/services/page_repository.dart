@@ -216,9 +216,9 @@ class PageRepository {
             qType: uri.queryParameters['q_type'] ?? '',
           )
         : _isReaderChapterUri(uri)
-        ? await _standardPageLoader(
+        ? await _loadReaderPageWithFallback(
             uri,
-            authScope: requestedKey.authScope,
+            requestedKey: requestedKey,
             requestContext: requestContext,
           )
         : _isHtmlStandardUri(uri)
@@ -251,6 +251,26 @@ class PageRepository {
       _memoryCache.remove(requestedKey);
     }
     return page;
+  }
+
+  Future<EasyCopyPage> _loadReaderPageWithFallback(
+    Uri uri, {
+    required PageQueryKey requestedKey,
+    NavigationRequestContext? requestContext,
+  }) async {
+    try {
+      return await _htmlPageLoader(uri, authScope: requestedKey.authScope);
+    } catch (error) {
+      debugPrint(
+        'Reader HTML loader failed for ${uri.path}; '
+        'falling back to standard loader. $error',
+      );
+      return _standardPageLoader(
+        uri,
+        authScope: requestedKey.authScope,
+        requestContext: requestContext,
+      );
+    }
   }
 
   Future<void> _revalidateInternal(
