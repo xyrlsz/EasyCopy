@@ -1,4 +1,5 @@
 import 'package:easy_copy/config/app_config.dart';
+import 'package:easy_copy/models/page_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -161,5 +162,46 @@ void main() {
     expect(firstPage.queryParameters['q'], 'robot');
     expect(firstPage.queryParameters['q_type'], 'author');
     expect(firstPage.queryParameters.containsKey('page'), isFalse);
+  });
+
+  test(
+    'buildDiscoverPagerJumpUri uses offset pagination when pager links do',
+    () {
+      final Uri target = AppConfig.buildDiscoverPagerJumpUri(
+        Uri.parse('https://www.2026copy.com/comics?ordering=-datetime_updated'),
+        pager: const PagerData(
+          currentLabel: '1',
+          totalLabel: '共5页',
+          nextHref:
+              'https://www.2026copy.com/comics?ordering=-datetime_updated&offset=50&limit=50',
+        ),
+        page: 3,
+      );
+
+      expect(target.queryParameters['ordering'], '-datetime_updated');
+      expect(target.queryParameters['limit'], '50');
+      expect(target.queryParameters['offset'], '100');
+      expect(target.queryParameters.containsKey('page'), isFalse);
+    },
+  );
+
+  test('buildDiscoverPagerJumpUri keeps page pagination for search routes', () {
+    final Uri target = AppConfig.buildDiscoverPagerJumpUri(
+      Uri.parse('https://www.2026copy.com/search?q=robot&q_type=author'),
+      pager: const PagerData(
+        currentLabel: '2',
+        totalLabel: '共10页 · 120条',
+        prevHref:
+            'https://www.2026copy.com/search?q=robot&page=1&q_type=author',
+        nextHref:
+            'https://www.2026copy.com/search?q=robot&page=3&q_type=author',
+      ),
+      page: 4,
+    );
+
+    expect(target.queryParameters['q'], 'robot');
+    expect(target.queryParameters['q_type'], 'author');
+    expect(target.queryParameters['page'], '4');
+    expect(target.queryParameters.containsKey('offset'), isFalse);
   });
 }

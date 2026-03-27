@@ -262,8 +262,9 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
       _showSnackBar('页码超出范围，最多 $totalPageCount 页');
       return;
     }
-    final Uri targetUri = AppConfig.buildPagedUri(
+    final Uri targetUri = AppConfig.buildDiscoverPagerJumpUri(
       Uri.parse(page.uri),
+      pager: page.pager,
       page: targetPage,
     );
     _moveStandardPagerViewportToTop();

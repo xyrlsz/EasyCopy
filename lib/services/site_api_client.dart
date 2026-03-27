@@ -79,29 +79,25 @@ class SiteApiClient {
     final Future<Map<String, Object?>> userFuture = _getJson(
       '/api/v2/web/user/info',
     );
-    final Future<Map<String, Object?>> collectionsFuture = _getJsonOrEmpty(
-      const <String>['/api/v3/member/collect/comics'],
-    );
-    final Future<Map<String, Object?>> historyFuture = _getJsonOrEmpty(
-      const <String>['/api/kb/web/browses', '/api/v2/web/browses'],
-    );
+    final Future<List<Map<String, Object?>>> collectionsFuture =
+        _getPagedListOrEmpty(const <String>['/api/v3/member/collect/comics']);
+    final Future<List<Map<String, Object?>>> historyFuture =
+        _getPagedListOrEmpty(const <String>[
+          '/api/kb/web/browses',
+          '/api/v2/web/browses',
+        ]);
 
-    final List<Map<String, Object?>> responses = await Future.wait(
-      <Future<Map<String, Object?>>>[
-        userFuture,
-        collectionsFuture,
-        historyFuture,
-      ],
-    );
+    final Map<String, Object?> userPayload = await userFuture;
+    final List<Map<String, Object?>> collectionsPayload =
+        await collectionsFuture;
+    final List<Map<String, Object?>> historyPayload = await historyFuture;
 
-    final ProfileUserData user = _parseUser(responses[0]);
+    final ProfileUserData user = _parseUser(userPayload);
     await _session.bindUserId(user.userId);
     final List<ProfileLibraryItem> collections = _parseCollections(
-      responses[1]['results'],
+      collectionsPayload,
     );
-    final List<ProfileHistoryItem> history = _parseHistory(
-      responses[2]['results'],
-    );
+    final List<ProfileHistoryItem> history = _parseHistory(historyPayload);
 
     return ProfilePageData(
       title: '我的',
@@ -229,9 +225,20 @@ class SiteApiClient {
     );
   }
 
-  Future<Map<String, Object?>> _getJson(String path) async {
+  Future<Map<String, Object?>> _getJson(
+    String path, {
+    Map<String, String>? queryParameters,
+  }) async {
     await _session.ensureInitialized();
-    final Uri uri = AppConfig.resolvePath(path);
+    final Uri baseUri = AppConfig.resolvePath(path);
+    final Uri uri = queryParameters == null || queryParameters.isEmpty
+        ? baseUri
+        : baseUri.replace(
+            queryParameters: <String, String>{
+              ...baseUri.queryParameters,
+              ...queryParameters,
+            },
+          );
     final http.Response response = await _client.get(
       uri,
       headers: <String, String>{
@@ -376,6 +383,72 @@ class SiteApiClient {
       'message': '请求成功',
       'results': <String, Object?>{'list': <Object?>[]},
     };
+  }
+
+  Future<List<Map<String, Object?>>> _getPagedListOrEmpty(
+    List<String> paths,
+  ) async {
+    Object? lastError;
+    for (final String path in paths) {
+      try {
+        return await _getPagedList(path);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError is SiteApiException && lastError.message.contains('登录已失效')) {
+      throw lastError;
+    }
+    return const <Map<String, Object?>>[];
+  }
+
+  Future<List<Map<String, Object?>>> _getPagedList(String path) async {
+    final Map<String, Object?> payload = await _getJson(path);
+    final Map<String, Object?> results = _asMap(payload['results']);
+    final List<Map<String, Object?>> merged = <Map<String, Object?>>[
+      ..._extractList(results),
+    ];
+    final int total = _pickInt(results, const <String>[
+      'total',
+      'count',
+      'total_count',
+    ], fallback: merged.length);
+    final int limit = _pickInt(results, const <String>[
+      'limit',
+      'page_size',
+      'pageSize',
+    ], fallback: merged.isEmpty ? 0 : merged.length);
+    final int firstOffset = _pickInt(results, const <String>['offset']);
+    if (limit <= 0 || merged.length >= total) {
+      return merged;
+    }
+
+    final List<Future<Map<String, Object?>>> pageFutures =
+        <Future<Map<String, Object?>>>[
+          for (
+            int offset = firstOffset + limit;
+            offset < total;
+            offset += limit
+          )
+            _getJson(
+              path,
+              queryParameters: <String, String>{
+                'offset': '$offset',
+                'limit': '$limit',
+              },
+            ),
+        ];
+    if (pageFutures.isEmpty) {
+      return merged;
+    }
+
+    final List<Map<String, Object?>> pagePayloads = await Future.wait(
+      pageFutures,
+    );
+    for (final Map<String, Object?> pagePayload in pagePayloads) {
+      merged.addAll(_extractList(pagePayload['results']));
+    }
+    return merged;
   }
 
   ProfileUserData _parseUser(Map<String, Object?> payload) {
@@ -652,6 +725,26 @@ class SiteApiClient {
       }
     }
     return '';
+  }
+
+  int _pickInt(
+    Map<String, Object?> source,
+    List<String> keys, {
+    int fallback = 0,
+  }) {
+    for (final String key in keys) {
+      final Object? value = source[key];
+      if (value is num) {
+        return value.toInt();
+      }
+      if (value is String) {
+        final int? parsed = int.tryParse(value.trim());
+        if (parsed != null) {
+          return parsed;
+        }
+      }
+    }
+    return fallback;
   }
 
   bool _pickBool(Map<String, Object?> source, String key) {

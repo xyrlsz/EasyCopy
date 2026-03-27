@@ -131,6 +131,142 @@ void main() {
     },
   );
 
+  test('loadProfile aggregates paginated collections and history', () async {
+    final SiteSession session = SiteSession(
+      store: _MemoryKeyValueStore(),
+      now: () => DateTime(2026, 3, 7, 9, 30),
+    );
+    await session.saveToken(
+      'token_paged',
+      cookies: const <String, String>{'token': 'token_paged'},
+    );
+
+    Map<String, Object?> pagedResults({
+      required int total,
+      required int offset,
+      required int limit,
+      required Map<String, Object?> Function(int index) builder,
+    }) {
+      final int end = (offset + limit) > total ? total : (offset + limit);
+      return <String, Object?>{
+        'list': <Object?>[
+          for (int index = offset; index < end; index += 1) builder(index),
+        ],
+        'total': total,
+        'limit': limit,
+        'offset': offset,
+      };
+    }
+
+    final List<String> requestedUris = <String>[];
+    final SiteApiClient client = SiteApiClient(
+      session: session,
+      client: MockClient((http.Request request) async {
+        requestedUris.add(request.url.toString());
+        switch (request.url.path) {
+          case '/api/v2/web/user/info':
+            return jsonResponse(<String, Object?>{
+              'code': 200,
+              'results': <String, Object?>{
+                'user_id': 'user-paged',
+                'username': 'paged_user',
+              },
+            });
+          case '/api/v3/member/collect/comics':
+            final int offset =
+                int.tryParse(request.url.queryParameters['offset'] ?? '0') ?? 0;
+            final int limit =
+                int.tryParse(request.url.queryParameters['limit'] ?? '20') ??
+                20;
+            return jsonResponse(<String, Object?>{
+              'code': 200,
+              'results': pagedResults(
+                total: 45,
+                offset: offset,
+                limit: limit,
+                builder: (int index) => <String, Object?>{
+                  'comic': <String, Object?>{
+                    'name': '收藏作品$index',
+                    'path_word': 'favorite-$index',
+                    'cover': 'https://img.example/favorite-$index.jpg',
+                  },
+                },
+              ),
+            });
+          case '/api/kb/web/browses':
+            final int offset =
+                int.tryParse(request.url.queryParameters['offset'] ?? '0') ?? 0;
+            final int limit =
+                int.tryParse(request.url.queryParameters['limit'] ?? '20') ??
+                20;
+            return jsonResponse(<String, Object?>{
+              'code': 200,
+              'results': pagedResults(
+                total: 41,
+                offset: offset,
+                limit: limit,
+                builder: (int index) => <String, Object?>{
+                  'last_chapter_id': 'chapter-$index',
+                  'last_chapter_name': '第$index话',
+                  'datetime_created': '2026-03-07T08:00:00Z',
+                  'comic': <String, Object?>{
+                    'name': '历史作品$index',
+                    'path_word': 'history-$index',
+                    'cover': 'https://img.example/history-$index.jpg',
+                  },
+                },
+              ),
+            });
+          default:
+            fail('Unexpected path: ${request.url.path}');
+        }
+      }),
+    );
+
+    final ProfilePageData page = await client.loadProfile();
+
+    expect(page.collections, hasLength(45));
+    expect(
+      page.collections.first.href,
+      'https://www.2026copy.com/comic/favorite-0',
+    );
+    expect(
+      page.collections.last.href,
+      'https://www.2026copy.com/comic/favorite-44',
+    );
+    expect(page.history, hasLength(41));
+    expect(page.history.first.chapterLabel, '第0话');
+    expect(
+      page.history.last.chapterHref,
+      'https://www.2026copy.com/comic/history-40/chapter/chapter-40',
+    );
+    expect(
+      requestedUris,
+      contains(
+        'https://www.2026copy.com/api/v3/member/collect/comics?offset=20&limit=20',
+      ),
+    );
+    expect(
+      requestedUris,
+      contains(
+        'https://www.2026copy.com/api/v3/member/collect/comics?offset=40&limit=20',
+      ),
+    );
+    expect(
+      requestedUris,
+      contains(
+        'https://www.2026copy.com/api/kb/web/browses?offset=20&limit=20',
+      ),
+    );
+    expect(
+      requestedUris,
+      contains(
+        'https://www.2026copy.com/api/kb/web/browses?offset=40&limit=20',
+      ),
+    );
+    expect(requestedUris, isNot(contains(contains('/api/v2/web/browses'))));
+  });
+
   test('loadProfile tolerates optional endpoint failures', () async {
     final SiteSession session = SiteSession(
       store: _MemoryKeyValueStore(),

@@ -1,3 +1,4 @@
+import 'package:easy_copy/models/page_models.dart';
 import 'package:easy_copy/services/host_manager.dart';
 import 'package:flutter/material.dart';
 
@@ -116,18 +117,33 @@ class AppConfig {
     } else {
       queryParameters['page'] = '$normalizedPage';
     }
-    final List<MapEntry<String, String>> sortedQuery =
-        queryParameters.entries.toList(growable: false)..sort((
-          MapEntry<String, String> left,
-          MapEntry<String, String> right,
-        ) {
-          return left.key.compareTo(right.key);
-        });
-    return normalizedUri.replace(
-      queryParameters: sortedQuery.isEmpty
-          ? null
-          : Map<String, String>.fromEntries(sortedQuery),
+    return _replaceSortedQuery(normalizedUri, queryParameters);
+  }
+
+  static Uri buildDiscoverPagerJumpUri(
+    Uri uri, {
+    required PagerData pager,
+    required int page,
+  }) {
+    final Uri normalizedUri = rewriteToCurrentHost(uri);
+    final int normalizedPage = page < 1 ? 1 : page;
+    final int? offsetLimit = _discoverPagerLimit(normalizedUri, pager);
+    if (offsetLimit == null || offsetLimit <= 0) {
+      return buildPagedUri(normalizedUri, page: normalizedPage);
+    }
+
+    final Map<String, String> queryParameters = Map<String, String>.from(
+      normalizedUri.queryParameters,
     );
+    queryParameters.remove('page');
+    queryParameters['limit'] = '$offsetLimit';
+    final int offset = (normalizedPage - 1) * offsetLimit;
+    if (offset <= 0) {
+      queryParameters.remove('offset');
+    } else {
+      queryParameters['offset'] = '$offset';
+    }
+    return _replaceSortedQuery(normalizedUri, queryParameters);
   }
 
   static String routeKeyForUri(Uri uri) {
@@ -155,6 +171,61 @@ class AppConfig {
       case ProfileSubview.cached:
         return 'cached';
     }
+  }
+
+  static Uri _replaceSortedQuery(Uri uri, Map<String, String> queryParameters) {
+    final List<MapEntry<String, String>> sortedQuery =
+        queryParameters.entries.toList(growable: false)..sort((
+          MapEntry<String, String> left,
+          MapEntry<String, String> right,
+        ) {
+          return left.key.compareTo(right.key);
+        });
+    return uri.replace(
+      queryParameters: sortedQuery.isEmpty
+          ? null
+          : Map<String, String>.fromEntries(sortedQuery),
+    );
+  }
+
+  static int? _discoverPagerLimit(Uri currentUri, PagerData pager) {
+    final int? currentLimit = _parsePositiveInt(
+      currentUri.queryParameters['limit'],
+    );
+    if (currentLimit != null) {
+      return currentLimit;
+    }
+    for (final String href in <String>[pager.nextHref, pager.prevHref]) {
+      final String trimmed = href.trim();
+      if (trimmed.isEmpty) {
+        continue;
+      }
+      final Uri resolved = resolveNavigationUri(
+        trimmed,
+        currentUri: currentUri,
+      );
+      final int? resolvedLimit = _parsePositiveInt(
+        resolved.queryParameters['limit'],
+      );
+      if (resolvedLimit != null) {
+        return resolvedLimit;
+      }
+      final int? resolvedOffset = _parsePositiveInt(
+        resolved.queryParameters['offset'],
+      );
+      if (resolvedOffset != null && pager.currentPageNumber == 1) {
+        return resolvedOffset;
+      }
+    }
+    return null;
+  }
+
+  static int? _parsePositiveInt(String? value) {
+    final int? parsed = int.tryParse((value ?? '').trim());
+    if (parsed == null || parsed <= 0) {
+      return null;
+    }
+    return parsed;
   }
 }
 
