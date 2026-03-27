@@ -291,8 +291,7 @@ class HostManager {
           ? null
           : _normalizeHost(_snapshot!.sessionPinnedHost!);
     }
-    if (_snapshot == null ||
-        _now().difference(_snapshot!.checkedAt) >= probeCacheTtl) {
+    if (_sessionPinnedHost == null) {
       await refreshProbes(force: true);
     }
   }
