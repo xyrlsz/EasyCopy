@@ -178,6 +178,21 @@ const String _pageExtractionScriptTemplate = r"""
     }
     return '';
   };
+  const extractCallStringArgument = (source, functionName) => {
+    const pattern = new RegExp(
+      `(?:^|[^\\w$.])${escapeRegExp(functionName)}\\s*\\(\\s*`,
+      'im',
+    );
+    const match = pattern.exec(source);
+    if (!match) {
+      return '';
+    }
+    const parsed = parseJavaScriptStringLiteral(
+      source,
+      match.index + match[0].length,
+    );
+    return parsed ? cleanText(parsed.value) : '';
+  };
   const buildComicCard = (anchor) => {
     const container =
       anchor.closest('.exemptComic_Item') ||
@@ -706,8 +721,9 @@ const String _pageExtractionScriptTemplate = r"""
       '.comicParticulars-botton.collect',
     );
     const collectText = text(collectButton);
-    const collectMatch = attr(collectButton, 'onclick').match(
-      /collect\('([^']+)'\)/,
+    const collectId = extractCallStringArgument(
+      attr(collectButton, 'onclick'),
+      'collect',
     );
     const rowByPrefix = (prefix) =>
       infoRows.find((row) => text(row.querySelector('span')).startsWith(prefix));
@@ -741,7 +757,7 @@ const String _pageExtractionScriptTemplate = r"""
           active: false,
         }))
         .filter((tag) => tag.label && tag.href),
-      comicId: collectMatch ? cleanText(collectMatch[1]) : '',
+      comicId: collectId,
       isCollected:
         !!collectText &&
         !collectText.includes('加入書架') &&
