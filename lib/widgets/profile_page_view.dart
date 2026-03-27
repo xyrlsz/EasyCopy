@@ -336,16 +336,25 @@ class ProfilePageView extends StatelessWidget {
   }
 
   Widget _buildLoggedOutCard() {
+    final String message = page.message.trim();
+    final bool showMessage =
+        message.isNotEmpty &&
+        message != '登录后可查看收藏与历史。' &&
+        message != '登录后可查看收藏、历史和继续阅读。' &&
+        message != '個人中心還在重構中，這個版本先把首頁、發現、排行和閱讀體驗做好。';
+
     return _SectionCard(
       child: Column(
         children: <Widget>[
           const Icon(Icons.person_outline_rounded, size: 48),
-          const SizedBox(height: 14),
-          Text(
-            page.message.isEmpty ? '登录后可查看收藏与历史。' : page.message,
-            textAlign: TextAlign.center,
-            style: const TextStyle(height: 1.6),
-          ),
+          if (showMessage) ...<Widget>[
+            const SizedBox(height: 14),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(height: 1.6),
+            ),
+          ],
           const SizedBox(height: 20),
           Row(
             children: <Widget>[
@@ -392,16 +401,6 @@ class ProfilePageView extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    if (user.createdAt.isNotEmpty) ...<Widget>[
-                      const SizedBox(height: 4),
-                      Text(
-                        '注册于 ${user.createdAt}',
-                        style: TextStyle(
-                          color: colorScheme.onSurface.withValues(alpha: 0.62),
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ),
@@ -500,27 +499,11 @@ class _HostSettingsEntryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String? pinnedHost = snapshot?.sessionPinnedHost
-        ?.trim()
-        .toLowerCase();
-
     return AppSurfaceCard(
       title: '节点设置',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Text(
-            pinnedHost == null
-                ? '管理备用网址测速、自动选择和手动切换。'
-                : '当前已手动锁定节点，可进入二级页面恢复自动选择或切换其他节点。',
-            style: TextStyle(
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: 0.72),
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
             child: FilledButton.tonalIcon(
@@ -695,21 +678,9 @@ class _HostSettingsPageState extends State<_HostSettingsPage> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 14),
-                  Text(
-                    pinnedHost == null
-                        ? '当前使用自动选择。点击下方节点可手动锁定。'
-                        : '当前已手动锁定到 $pinnedHost。点击其他节点可立即切换。',
-                    style: TextStyle(
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.onSurface.withValues(alpha: 0.72),
-                      height: 1.5,
-                    ),
-                  ),
                   if (pinnedHost != null &&
                       widget.onUseAutomaticSelection != null) ...<Widget>[
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 14),
                     FilledButton.tonalIcon(
                       onPressed: _isBusy ? null : _handleUseAutomaticSelection,
                       icon: const Icon(Icons.auto_mode_rounded),
