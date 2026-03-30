@@ -59,6 +59,16 @@ bool _boolValue(Object? value, {bool fallback = false}) {
   return fallback;
 }
 
+int _intValue(Object? value, {int fallback = 0}) {
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value is String) {
+    return int.tryParse(value.trim()) ?? fallback;
+  }
+  return fallback;
+}
+
 List<Object?> _listValue(Object? value) {
   if (value is List<Object?>) {
     return value;
@@ -905,6 +915,10 @@ class ProfilePageData extends EasyCopyPage {
     this.continueReading,
     this.collections = const <ProfileLibraryItem>[],
     this.history = const <ProfileHistoryItem>[],
+    this.collectionsPager = const PagerData(),
+    this.historyPager = const PagerData(),
+    this.collectionsTotal = 0,
+    this.historyTotal = 0,
     this.message = '',
   }) : super(type: EasyCopyPageType.profile);
 
@@ -929,6 +943,10 @@ class ProfilePageData extends EasyCopyPage {
         'history',
         ProfileHistoryItem.fromJson,
       ),
+      collectionsPager: PagerData.fromJson(_mapValue(json['collectionsPager'])),
+      historyPager: PagerData.fromJson(_mapValue(json['historyPager'])),
+      collectionsTotal: _intValue(json['collectionsTotal']),
+      historyTotal: _intValue(json['historyTotal']),
       message: _stringValue(json['message']),
     );
   }
@@ -951,6 +969,10 @@ class ProfilePageData extends EasyCopyPage {
   final ProfileHistoryItem? continueReading;
   final List<ProfileLibraryItem> collections;
   final List<ProfileHistoryItem> history;
+  final PagerData collectionsPager;
+  final PagerData historyPager;
+  final int collectionsTotal;
+  final int historyTotal;
   final String message;
 
   ProfilePageData copyWith({
@@ -963,6 +985,10 @@ class ProfilePageData extends EasyCopyPage {
     bool clearContinueReading = false,
     List<ProfileLibraryItem>? collections,
     List<ProfileHistoryItem>? history,
+    PagerData? collectionsPager,
+    PagerData? historyPager,
+    int? collectionsTotal,
+    int? historyTotal,
     String? message,
   }) {
     return ProfilePageData(
@@ -975,6 +1001,10 @@ class ProfilePageData extends EasyCopyPage {
           : (continueReading ?? this.continueReading),
       collections: collections ?? this.collections,
       history: history ?? this.history,
+      collectionsPager: collectionsPager ?? this.collectionsPager,
+      historyPager: historyPager ?? this.historyPager,
+      collectionsTotal: collectionsTotal ?? this.collectionsTotal,
+      historyTotal: historyTotal ?? this.historyTotal,
       message: message ?? this.message,
     );
   }
@@ -994,6 +1024,10 @@ class ProfilePageData extends EasyCopyPage {
       'history': history
           .map((ProfileHistoryItem item) => item.toJson())
           .toList(),
+      'collectionsPager': collectionsPager.toJson(),
+      'historyPager': historyPager.toJson(),
+      'collectionsTotal': collectionsTotal,
+      'historyTotal': historyTotal,
       'message': message,
     };
   }

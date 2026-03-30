@@ -11,6 +11,7 @@ import 'package:easy_copy/page_transition_scope.dart';
 import 'package:easy_copy/services/app_preferences_controller.dart';
 import 'package:easy_copy/services/comic_download_service.dart';
 import 'package:easy_copy/services/deferred_viewport_coordinator.dart';
+import 'package:easy_copy/services/download_queue_manager.dart';
 import 'package:easy_copy/services/discover_filter_selection.dart';
 import 'package:easy_copy/services/display_mode_service.dart';
 import 'package:easy_copy/services/download_storage_service.dart';
@@ -36,7 +37,7 @@ import 'package:easy_copy/widgets/download_management_page.dart';
 import 'package:easy_copy/widgets/native_login_screen.dart';
 import 'package:easy_copy/widgets/profile_page_view.dart';
 import 'package:easy_copy/widgets/settings_ui.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
@@ -58,6 +59,39 @@ Widget _buildFadeSwitchTransition(Widget child, Animation<double> animation) {
     opacity: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
     child: child,
   );
+}
+
+class _EasyCopyScreenDownloadTaskRunner implements DownloadTaskRunner {
+  const _EasyCopyScreenDownloadTaskRunner(this._state);
+
+  final _EasyCopyScreenState _state;
+
+  @override
+  Future<ReaderPageData> prepare(DownloadQueueTask task) async {
+    await _state._session.ensureInitialized();
+    return _state._extractReaderPageForDownload(Uri.parse(task.chapterHref));
+  }
+
+  @override
+  Future<void> download(
+    DownloadQueueTask task,
+    ReaderPageData page, {
+    required ChapterDownloadPauseChecker shouldPause,
+    required ChapterDownloadCancelChecker shouldCancel,
+    ChapterDownloadProgressCallback? onProgress,
+  }) {
+    return _state._downloadService.downloadChapter(
+      page,
+      cookieHeader: _state._session.cookieHeader,
+      comicUri: task.comicUri,
+      chapterHref: task.chapterHref,
+      chapterLabel: task.chapterLabel,
+      coverUrl: task.coverUrl,
+      shouldPause: shouldPause,
+      shouldCancel: shouldCancel,
+      onProgress: onProgress,
+    );
+  }
 }
 
 class EasyCopyScreen extends StatefulWidget {
@@ -96,18 +130,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   final DownloadStorageService _downloadStorageService =
       DownloadStorageService.instance;
   final DownloadQueueStore _downloadQueueStore = DownloadQueueStore.instance;
+  late final DownloadQueueManager _downloadQueueManager;
   final PrimaryTabSessionStore _tabSessionStore = PrimaryTabSessionStore(
     rootUris: <int, Uri>{
       for (int index = 0; index < appDestinations.length; index += 1)
         index: appDestinations[index].uri,
     },
-  );
-  final ValueNotifier<DownloadQueueSnapshot> _downloadQueueSnapshotNotifier =
-      ValueNotifier<DownloadQueueSnapshot>(const DownloadQueueSnapshot());
-  final ValueNotifier<DownloadStorageState> _downloadStorageStateNotifier =
-      ValueNotifier<DownloadStorageState>(const DownloadStorageState.loading());
-  final ValueNotifier<bool> _downloadStorageBusyNotifier = ValueNotifier<bool>(
-    false,
   );
   late final PageRepository _pageRepository;
   late PageController _readerPageController;
@@ -126,7 +154,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   Timer? _readerAutoTurnTimer;
   Timer? _readerClockTimer;
   ReaderPosition? _lastPersistedReaderPosition;
-  bool _isProcessingDownloadQueue = false;
   bool _isUpdatingHostSettings = false;
   bool _isUpdatingCollection = false;
   bool _isReaderSettingsOpen = false;
@@ -148,10 +175,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   _AppliedReaderEnvironment? _appliedReaderEnvironment;
   ReaderPreferences? _lastObservedReaderPreferences;
   DownloadPreferences? _lastObservedDownloadPreferences;
-  final Map<String, List<DownloadQueueTask>> _pendingCancelledTaskCleanups =
-      <String, List<DownloadQueueTask>>{};
-  final Map<String, String> _pendingCancelledComicDeletions =
-      <String, String>{};
   final Map<int, ScrollController> _readerPageScrollControllers =
       <int, ScrollController>{};
   final Map<int, GlobalKey> _readerImageItemKeys = <int, GlobalKey>{};
@@ -168,6 +191,15 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   final StandardPageLoadController<EasyCopyPage> _standardPageLoadController =
       StandardPageLoadController<EasyCopyPage>();
 
+  ValueListenable<DownloadQueueSnapshot> get _downloadQueueSnapshotNotifier =>
+      _downloadQueueManager.snapshotNotifier;
+
+  ValueListenable<DownloadStorageState> get _downloadStorageStateNotifier =>
+      _downloadQueueManager.storageStateNotifier;
+
+  ValueListenable<bool> get _downloadStorageBusyNotifier =>
+      _downloadQueueManager.storageBusyNotifier;
+
   @override
   void initState() {
     super.initState();
@@ -183,6 +215,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     _pageRepository = PageRepository(
       standardPageLoader: _loadStandardPageFresh,
       htmlPageLoader: SiteHtmlPageLoader.instance.loadPage,
+    );
+    _downloadQueueManager = DownloadQueueManager(
+      preferencesController: _preferencesController,
+      downloadService: _downloadService,
+      queueStore: _downloadQueueStore,
+      taskRunner: _EasyCopyScreenDownloadTaskRunner(this),
+      onLibraryChanged: _refreshCachedComics,
+      onNotice: _handleDownloadQueueNotice,
     );
     _preferencesController.addListener(_handlePreferencesChanged);
     _standardScrollController.addListener(_handleStandardScroll);
@@ -223,9 +263,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     _searchController.dispose();
     _standardScrollController.dispose();
     _readerScrollController.dispose();
-    _downloadQueueSnapshotNotifier.dispose();
-    _downloadStorageStateNotifier.dispose();
-    _downloadStorageBusyNotifier.dispose();
+    _downloadQueueManager.dispose();
     unawaited(_restoreDefaultReaderEnvironment());
     super.dispose();
   }
@@ -527,12 +565,11 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       _hostManager.ensureInitialized(),
       _session.ensureInitialized(),
       _preferencesController.ensureInitialized(),
-      _downloadQueueStore.ensureInitialized(),
       _readerProgressStore.ensureInitialized(),
     ]);
-    await _refreshCachedComics();
     await _refreshDownloadStorageState();
     await _restoreDownloadQueue();
+    await _refreshCachedComics();
     final Uri homeUri = appDestinations.first.uri;
     if (!mounted) {
       return;
@@ -844,9 +881,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   Future<void> _refreshDownloadStorageState({
     DownloadPreferences? preferences,
   }) async {
-    final DownloadStorageState state = await _downloadService
-        .resolveStorageState(preferences: preferences);
-    _downloadStorageStateNotifier.value = state;
+    await _downloadQueueManager.refreshStorageState(preferences: preferences);
+  }
+
+  void _handleDownloadQueueNotice(String message) {
+    if (!mounted || message.trim().isEmpty) {
+      return;
+    }
+    _showSnackBar(message);
   }
 
   Future<ReaderPageData> _extractReaderPageForDownload(Uri uri) async {
@@ -871,55 +913,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       _downloadQueueSnapshotNotifier.value;
 
   Future<void> _restoreDownloadQueue() async {
-    _downloadQueueSnapshotNotifier.value = await _downloadQueueStore.read();
-  }
-
-  Future<void> _persistDownloadQueueSnapshot(
-    DownloadQueueSnapshot snapshot,
-  ) async {
-    _downloadQueueSnapshotNotifier.value = snapshot;
-    if (snapshot.isEmpty) {
-      await _downloadQueueStore.clear();
-      return;
-    }
-    await _downloadQueueStore.write(snapshot);
-  }
-
-  void _setDownloadQueueSnapshotInMemory(DownloadQueueSnapshot snapshot) {
-    _downloadQueueSnapshotNotifier.value = snapshot;
-  }
-
-  DownloadQueueTask? _downloadQueueTaskById(String taskId) {
-    for (final DownloadQueueTask task in _downloadQueueSnapshot.tasks) {
-      if (task.id == taskId) {
-        return task;
-      }
-    }
-    return null;
-  }
-
-  Future<void> _updateDownloadQueueTask(
-    DownloadQueueTask updatedTask, {
-    bool persist = true,
-  }) async {
-    final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
-    final int index = snapshot.tasks.indexWhere(
-      (DownloadQueueTask task) => task.id == updatedTask.id,
-    );
-    if (index == -1) {
-      return;
-    }
-
-    final List<DownloadQueueTask> tasks = snapshot.tasks.toList(growable: true);
-    tasks[index] = updatedTask;
-    final DownloadQueueSnapshot nextSnapshot = snapshot.copyWith(
-      tasks: tasks.toList(growable: false),
-    );
-    if (persist) {
-      await _persistDownloadQueueSnapshot(nextSnapshot);
-      return;
-    }
-    _setDownloadQueueSnapshotInMemory(nextSnapshot);
+    await _downloadQueueManager.restoreQueue();
   }
 
   String _comicQueueKey(String value) {
@@ -964,7 +958,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     List<ChapterData> chapters,
   ) async {
     final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
-    final List<DownloadQueueTask> tasks = snapshot.tasks.toList(growable: true);
     final Set<String> downloadedKeys = _downloadedChapterPathKeysForDetail(
       page,
     );
@@ -976,6 +969,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     int addedCount = 0;
     int skippedCachedCount = 0;
     int skippedQueuedCount = 0;
+    final List<DownloadQueueTask> newTasks = <DownloadQueueTask>[];
 
     for (final ChapterData chapter in chapters) {
       final Uri chapterUri = AppConfig.resolveNavigationUri(
@@ -992,7 +986,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         continue;
       }
 
-      tasks.add(_buildDownloadQueueTask(page, chapterUri, chapter));
+      newTasks.add(_buildDownloadQueueTask(page, chapterUri, chapter));
       queuedChapterKeys.add(chapterKey);
       addedCount += 1;
     }
@@ -1008,13 +1002,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       return;
     }
 
-    final bool keepPaused = snapshot.isPaused && snapshot.isNotEmpty;
-    await _persistDownloadQueueSnapshot(
-      snapshot.copyWith(
-        isPaused: keepPaused,
-        tasks: tasks.toList(growable: false),
-      ),
-    );
+    final bool keepPaused = await _downloadQueueManager.addTasks(newTasks);
 
     final StringBuffer message = StringBuffer('已加入后台缓存队列：$addedCount 话');
     if (skippedCachedCount > 0) {
@@ -1027,10 +1015,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       message.write('（当前队列已暂停）');
     }
     _showSnackBar(message.toString());
-
-    if (!keepPaused) {
-      unawaited(_ensureDownloadQueueRunning());
-    }
   }
 
   Future<void> _pauseDownloadQueue() async {
@@ -1038,100 +1022,16 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     if (snapshot.isEmpty || snapshot.isPaused) {
       return;
     }
-    await _persistDownloadQueueSnapshot(snapshot.copyWith(isPaused: true));
+    await _downloadQueueManager.pauseQueue();
     _showSnackBar('后台缓存将在当前图片完成后暂停');
   }
 
   Future<void> _resumeDownloadQueue() async {
-    final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
-    if (snapshot.isEmpty) {
+    if (_downloadQueueSnapshot.isEmpty) {
       return;
     }
-
-    final DateTime now = DateTime.now();
-    final List<DownloadQueueTask> tasks = snapshot.tasks
-        .map((DownloadQueueTask task) {
-          if (task.status == DownloadQueueTaskStatus.failed ||
-              task.status == DownloadQueueTaskStatus.paused ||
-              task.status == DownloadQueueTaskStatus.parsing ||
-              task.status == DownloadQueueTaskStatus.downloading) {
-            return task.copyWith(
-              status: DownloadQueueTaskStatus.queued,
-              progressLabel: '等待缓存',
-              errorMessage: '',
-              updatedAt: now,
-            );
-          }
-          return task;
-        })
-        .toList(growable: false);
-
-    await _persistDownloadQueueSnapshot(
-      snapshot.copyWith(isPaused: false, tasks: tasks),
-    );
+    await _downloadQueueManager.resumeQueue();
     _showSnackBar('已继续后台缓存');
-    unawaited(_ensureDownloadQueueRunning());
-  }
-
-  Future<List<DownloadQueueTask>> _removeComicFromDownloadQueue(
-    String comicKey,
-  ) async {
-    final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
-    if (snapshot.isEmpty) {
-      return const <DownloadQueueTask>[];
-    }
-
-    final List<DownloadQueueTask> removedTasks = snapshot.tasks
-        .where((DownloadQueueTask task) => task.comicKey == comicKey)
-        .toList(growable: false);
-    if (removedTasks.isEmpty) {
-      return const <DownloadQueueTask>[];
-    }
-
-    final DownloadQueueTask? activeTask = snapshot.activeTask;
-    final bool removesActiveComic = activeTask?.comicKey == comicKey;
-    final List<DownloadQueueTask> remainingTasks = snapshot.tasks
-        .where((DownloadQueueTask task) => task.comicKey != comicKey)
-        .toList(growable: false);
-
-    if (removesActiveComic && activeTask != null) {
-      _pendingCancelledTaskCleanups[activeTask.id] = removedTasks;
-    }
-
-    await _persistDownloadQueueSnapshot(
-      snapshot.copyWith(
-        isPaused: remainingTasks.isEmpty ? false : snapshot.isPaused,
-        tasks: remainingTasks,
-      ),
-    );
-    return removedTasks;
-  }
-
-  Future<void> _removeDownloadQueueTask(DownloadQueueTask task) async {
-    final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
-    if (snapshot.isEmpty) {
-      return;
-    }
-    final bool containsTask = snapshot.tasks.any(
-      (DownloadQueueTask item) => item.id == task.id,
-    );
-    if (!containsTask) {
-      return;
-    }
-
-    final bool removesActiveTask = snapshot.activeTask?.id == task.id;
-    final List<DownloadQueueTask> remainingTasks = snapshot.tasks
-        .where((DownloadQueueTask item) => item.id != task.id)
-        .toList(growable: false);
-    if (removesActiveTask) {
-      _pendingCancelledTaskCleanups[task.id] = <DownloadQueueTask>[task];
-    }
-    await _persistDownloadQueueSnapshot(
-      snapshot.copyWith(
-        isPaused: remainingTasks.isEmpty ? false : snapshot.isPaused,
-        tasks: remainingTasks,
-      ),
-    );
   }
 
   Future<void> _confirmDeleteCachedComic(CachedComicLibraryEntry item) async {
@@ -1161,20 +1061,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     final String comicKey = item.comicHref.isEmpty
         ? item.comicTitle
         : _comicQueueKey(item.comicHref);
-    final DownloadQueueTask? activeTask = _downloadQueueSnapshot.activeTask;
-    final bool removesActiveComic = activeTask?.comicKey == comicKey;
-
-    final List<DownloadQueueTask> removedTasks =
-        await _removeComicFromDownloadQueue(comicKey);
-
-    if (!removesActiveComic) {
-      await _downloadService.cleanupIncompleteTasks(removedTasks);
-      await _downloadService.deleteCachedComic(item);
-      await _refreshCachedComics();
-    } else if (activeTask != null) {
-      _pendingCancelledComicDeletions[activeTask.id] = item.comicTitle;
-    }
-
+    await _downloadQueueManager.deleteCachedComic(item, comicKey: comicKey);
     _showSnackBar('已删除 ${item.comicTitle} 的缓存');
   }
 
@@ -1202,14 +1089,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       return;
     }
 
-    final bool removesActiveComic =
-        _downloadQueueSnapshot.activeTask?.comicKey == task.comicKey;
-    final List<DownloadQueueTask> removedTasks =
-        await _removeComicFromDownloadQueue(task.comicKey);
-    if (!removesActiveComic) {
-      await _downloadService.cleanupIncompleteTasks(removedTasks);
-      await _refreshCachedComics();
-    }
+    await _downloadQueueManager.removeQueuedComic(task);
     _showSnackBar('已移出 ${task.comicTitle} 的缓存任务');
   }
 
@@ -1237,66 +1117,31 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       return;
     }
 
-    final bool removesActiveTask =
-        _downloadQueueSnapshot.activeTask?.id == task.id;
-    await _removeDownloadQueueTask(task);
-    if (!removesActiveTask) {
-      await _downloadService.cleanupIncompleteTasks(<DownloadQueueTask>[task]);
-      await _refreshCachedComics();
-    }
+    await _downloadQueueManager.removeQueuedTask(task);
     _showSnackBar('已移出 ${task.chapterLabel}');
   }
 
   Future<void> _retryDownloadQueueTask(DownloadQueueTask task) async {
-    final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
-    final int index = snapshot.tasks.indexWhere(
-      (DownloadQueueTask item) => item.id == task.id,
-    );
-    if (index == -1) {
-      return;
-    }
-    final DateTime now = DateTime.now();
-    final List<DownloadQueueTask> tasks = snapshot.tasks.toList(growable: true);
-    tasks[index] = task.copyWith(
-      status: DownloadQueueTaskStatus.queued,
-      progressLabel: '等待缓存',
-      errorMessage: '',
-      updatedAt: now,
-    );
-    final bool shouldResume =
-        snapshot.isPaused &&
-        snapshot.activeTask?.id == task.id &&
-        task.status == DownloadQueueTaskStatus.failed;
-    await _persistDownloadQueueSnapshot(
-      snapshot.copyWith(
-        isPaused: shouldResume ? false : snapshot.isPaused,
-        tasks: tasks,
-      ),
-    );
+    await _downloadQueueManager.retryTask(task);
     _showSnackBar('已重新加入 ${task.chapterLabel}');
-    if (shouldResume || !snapshot.isPaused) {
-      unawaited(_ensureDownloadQueueRunning());
-    }
   }
 
   bool _canEditDownloadStorage() {
-    if (_downloadStorageBusyNotifier.value) {
-      return false;
-    }
-    if (_downloadQueueSnapshot.isNotEmpty && !_downloadQueueSnapshot.isPaused) {
-      _showSnackBar('请先暂停缓存队列后再切换缓存目录');
+    final String? reason = _downloadQueueManager.storageEditBlockReason();
+    if (reason != null) {
+      _showSnackBar(reason);
       return false;
     }
     return true;
   }
 
   Future<void> _pickDownloadStorageDirectory() async {
-    if (!_downloadService.supportsCustomStorageSelection ||
+    if (!_downloadQueueManager.supportsCustomStorageSelection ||
         !_canEditDownloadStorage()) {
       return;
     }
-    final List<DownloadStorageState> candidates = await _downloadService
-        .loadCustomDirectoryCandidates();
+    final List<DownloadStorageState> candidates = await _downloadQueueManager
+        .loadStorageCandidates();
     if (!mounted) {
       return;
     }
@@ -1398,22 +1243,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     DownloadPreferences nextPreferences, {
     required String successMessage,
   }) async {
-    final DownloadPreferences currentPreferences =
-        _preferencesController.downloadPreferences;
-    if (currentPreferences.mode == nextPreferences.mode &&
-        currentPreferences.customBasePath == nextPreferences.customBasePath) {
-      return;
-    }
-
-    _downloadStorageBusyNotifier.value = true;
     try {
-      final DownloadStorageMigrationResult result = await _downloadService
-          .migrateCacheRoot(from: currentPreferences, to: nextPreferences);
-      await _preferencesController.updateDownloadPreferences(
-        (_) => nextPreferences,
-      );
-      _downloadStorageStateNotifier.value = result.storageState;
-      await _refreshCachedComics();
+      final DownloadStorageMigrationResult? result = await _downloadQueueManager
+          .applyStoragePreferences(nextPreferences);
+      if (result == null) {
+        return;
+      }
       final String message = result.cleanupWarning.isEmpty
           ? successMessage
           : '$successMessage，${result.cleanupWarning}';
@@ -1421,8 +1256,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     } catch (error) {
       await _refreshDownloadStorageState();
       _showSnackBar(_formatDownloadError(error));
-    } finally {
-      _downloadStorageBusyNotifier.value = false;
     }
   }
 
@@ -1434,188 +1267,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     return Platform.isWindows ? normalized.toLowerCase() : normalized;
   }
 
-  bool _shouldPauseActiveDownload(DownloadQueueTask task) {
-    return _downloadQueueSnapshot.isPaused &&
-        _downloadQueueTaskById(task.id) != null;
-  }
-
-  bool _shouldCancelActiveDownload(DownloadQueueTask task) {
-    return _downloadQueueTaskById(task.id) == null;
-  }
-
   Future<void> _ensureDownloadQueueRunning() async {
-    if (_isProcessingDownloadQueue ||
-        _downloadQueueSnapshot.isPaused ||
-        _downloadQueueSnapshot.isEmpty ||
-        !mounted) {
-      return;
-    }
-
-    final DownloadStorageState storageState = await _downloadService
-        .resolveStorageState();
-    _downloadStorageStateNotifier.value = storageState;
-    if (!storageState.isReady) {
-      await _persistDownloadQueueSnapshot(
-        _downloadQueueSnapshot.copyWith(isPaused: true),
-      );
-      if (mounted) {
-        _showSnackBar(
-          storageState.errorMessage.isEmpty
-              ? '缓存目录不可用，请检查下载管理页中的目录设置。'
-              : '缓存目录不可用：${storageState.errorMessage}',
-        );
-      }
-      return;
-    }
-
-    _isProcessingDownloadQueue = true;
-    try {
-      while (mounted) {
-        final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
-        if (snapshot.isPaused || snapshot.isEmpty) {
-          break;
-        }
-        final DownloadQueueTask task = snapshot.activeTask!;
-        await _runDownloadQueueTask(task);
-      }
-    } finally {
-      _isProcessingDownloadQueue = false;
-    }
-  }
-
-  Future<void> _runDownloadQueueTask(DownloadQueueTask task) async {
-    await _updateDownloadQueueTask(
-      task.copyWith(
-        status: DownloadQueueTaskStatus.parsing,
-        progressLabel: '正在解析 ${task.chapterLabel}',
-        completedImages: 0,
-        totalImages: 0,
-        errorMessage: '',
-        updatedAt: DateTime.now(),
-      ),
-    );
-
-    try {
-      await _session.ensureInitialized();
-      final ReaderPageData readerPage = await _extractReaderPageForDownload(
-        Uri.parse(task.chapterHref),
-      );
-
-      if (_shouldCancelActiveDownload(task)) {
-        throw const DownloadCancelledException();
-      }
-      if (_shouldPauseActiveDownload(task)) {
-        throw const DownloadPausedException();
-      }
-
-      await _updateDownloadQueueTask(
-        task.copyWith(
-          status: DownloadQueueTaskStatus.downloading,
-          progressLabel: '正在缓存 ${task.chapterLabel}',
-          completedImages: 0,
-          totalImages: readerPage.imageUrls.length,
-          errorMessage: '',
-          updatedAt: DateTime.now(),
-        ),
-      );
-
-      await _downloadService.downloadChapter(
-        readerPage,
-        cookieHeader: _session.cookieHeader,
-        comicUri: task.comicUri,
-        chapterHref: task.chapterHref,
-        chapterLabel: task.chapterLabel,
-        coverUrl: task.coverUrl,
-        shouldPause: () => _shouldPauseActiveDownload(task),
-        shouldCancel: () => _shouldCancelActiveDownload(task),
-        onProgress: (ChapterDownloadProgress progress) async {
-          final DownloadQueueTask? latestTask = _downloadQueueTaskById(task.id);
-          if (latestTask == null) {
-            return;
-          }
-          await _updateDownloadQueueTask(
-            latestTask.copyWith(
-              status: DownloadQueueTaskStatus.downloading,
-              progressLabel: '${task.chapterLabel} · ${progress.currentLabel}',
-              completedImages: progress.completedCount,
-              totalImages: progress.totalCount,
-              errorMessage: '',
-              updatedAt: DateTime.now(),
-            ),
-            persist: false,
-          );
-        },
-      );
-
-      final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
-      final List<DownloadQueueTask> remainingTasks = snapshot.tasks
-          .where((DownloadQueueTask item) => item.id != task.id)
-          .toList(growable: false);
-      await _persistDownloadQueueSnapshot(
-        snapshot.copyWith(
-          isPaused: remainingTasks.isEmpty ? false : snapshot.isPaused,
-          tasks: remainingTasks,
-        ),
-      );
-      await _refreshCachedComics();
-
-      if (mounted && remainingTasks.isEmpty) {
-        _showSnackBar('后台缓存已完成');
-      }
-    } on DownloadPausedException {
-      final DownloadQueueTask? latestTask = _downloadQueueTaskById(task.id);
-      if (latestTask != null) {
-        final String pauseLabel =
-            latestTask.totalImages > 0 && latestTask.completedImages > 0
-            ? '已暂停 ${latestTask.completedImages}/${latestTask.totalImages}'
-            : '已暂停';
-        await _updateDownloadQueueTask(
-          latestTask.copyWith(
-            status: DownloadQueueTaskStatus.paused,
-            progressLabel: pauseLabel,
-            updatedAt: DateTime.now(),
-          ),
-        );
-      }
-    } on DownloadCancelledException {
-      final List<DownloadQueueTask> tasksToCleanup =
-          _pendingCancelledTaskCleanups.remove(task.id) ??
-          <DownloadQueueTask>[task];
-      final String? comicDeletionTitle = _pendingCancelledComicDeletions.remove(
-        task.id,
-      );
-      if (comicDeletionTitle != null) {
-        await _downloadService.deleteComicCacheByTitle(comicDeletionTitle);
-      } else {
-        await _downloadService.cleanupIncompleteTasks(tasksToCleanup);
-      }
-      await _refreshCachedComics();
-    } catch (error) {
-      final DownloadQueueTask? latestTask = _downloadQueueTaskById(task.id);
-      final String message = _formatDownloadError(error);
-      if (latestTask != null) {
-        final DownloadQueueSnapshot snapshot = _downloadQueueSnapshot;
-        final List<DownloadQueueTask> tasks = snapshot.tasks
-            .map((DownloadQueueTask item) {
-              if (item.id != latestTask.id) {
-                return item;
-              }
-              return latestTask.copyWith(
-                status: DownloadQueueTaskStatus.failed,
-                progressLabel: '失败：$message',
-                errorMessage: message,
-                updatedAt: DateTime.now(),
-              );
-            })
-            .toList(growable: false);
-        await _persistDownloadQueueSnapshot(
-          snapshot.copyWith(isPaused: true, tasks: tasks),
-        );
-      }
-      if (mounted) {
-        _showSnackBar('缓存失败：$message');
-      }
-    }
+    await _downloadQueueManager.ensureRunning();
   }
 
   String _formatDownloadError(Object error) {
@@ -2214,7 +1867,6 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     final Uri resolvedTargetUri = AppConfig.rewriteToCurrentHost(
       targetUri ?? AppConfig.profileUri,
     );
-    final Uri profileUri = AppConfig.profileUri;
     const int profileTabIndex = 3;
     final NavigationRequestContext requestContext = _prepareRouteEntry(
       resolvedTargetUri,
@@ -2223,7 +1875,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       preserveVisiblePage: preserveVisiblePage,
       sourceKind: NavigationRequestSourceKind.profile,
     );
-    final PageQueryKey key = _pageQueryKeyForUri(profileUri);
+    final PageQueryKey key = _pageQueryKeyForUri(resolvedTargetUri);
     if (!forceRefresh) {
       final CachedPageHit? cachedHit = await _pageRepository.readCached(key);
       if (!_canCommitRequest(requestContext)) {
@@ -2248,7 +1900,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         _markTabEntryLoading(requestContext, preservePage: true);
         unawaited(
           _revalidateCachedPage(
-            profileUri,
+            resolvedTargetUri,
             key: key,
             cachedEntry: cachedHit.envelope,
             requestContext: requestContext.copyWith(
@@ -2263,7 +1915,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
 
     try {
       final EasyCopyPage profilePage = await _pageRepository.loadFresh(
-        profileUri,
+        resolvedTargetUri,
         authScope: key.authScope,
         requestContext: requestContext,
       );
@@ -2349,10 +2001,10 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     );
   }
 
-  void _openProfileSubview(ProfileSubview view) {
+  void _openProfileSubview(ProfileSubview view, {int page = 1}) {
     unawaited(
       _loadProfilePage(
-        targetUri: AppConfig.buildProfileUri(view: view),
+        targetUri: AppConfig.buildProfileUri(view: view, page: page),
         preserveVisiblePage: _page is ProfilePageData,
         historyMode: NavigationIntent.push,
       ),

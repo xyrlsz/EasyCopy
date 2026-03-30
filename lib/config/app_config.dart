@@ -30,13 +30,20 @@ class AppConfig {
 
   static Uri get profileUri => buildProfileUri();
 
-  static Uri buildProfileUri({ProfileSubview view = ProfileSubview.root}) {
+  static Uri buildProfileUri({
+    ProfileSubview view = ProfileSubview.root,
+    int page = 1,
+  }) {
     final Uri uri = resolvePath(profilePath);
     final String? queryValue = _profileSubviewQueryValue(view);
+    final int normalizedPage = page < 1 ? 1 : page;
+    final Map<String, String> queryParameters = <String, String>{
+      if (queryValue != null) 'view': queryValue,
+      if (normalizedPage > 1 && view != ProfileSubview.root)
+        'page': '$normalizedPage',
+    };
     return uri.replace(
-      queryParameters: queryValue == null
-          ? null
-          : <String, String>{'view': queryValue},
+      queryParameters: queryParameters.isEmpty ? null : queryParameters,
     );
   }
 
@@ -68,6 +75,17 @@ class AppConfig {
       case ProfileSubview.cached:
         return '已缓存漫画';
     }
+  }
+
+  static int profilePageForUri(Uri uri) {
+    final Uri normalizedUri = rewriteToCurrentHost(uri);
+    final int? parsed = int.tryParse(
+      (normalizedUri.queryParameters['page'] ?? '').trim(),
+    );
+    if (parsed == null || parsed < 1) {
+      return 1;
+    }
+    return parsed;
   }
 
   static List<AppDestination> buildDestinations() {

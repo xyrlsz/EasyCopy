@@ -907,14 +907,46 @@ class ComicDownloadService {
         continue;
       }
       if (entity is File) {
-        final File destination = File(destinationPath);
-        await destination.parent.create(recursive: true);
-        if (await destination.exists()) {
-          await destination.delete();
+        final String fileName = entity.uri.pathSegments.isEmpty
+            ? ''
+            : entity.uri.pathSegments.last;
+        if (_shouldSkipMigrationFile(fileName)) {
+          continue;
         }
-        await entity.copy(destination.path);
+        await _copyFileSafely(entity, File(destinationPath));
       }
     }
+  }
+
+  Future<void> _copyFileSafely(File source, File destination) async {
+    await destination.parent.create(recursive: true);
+    if (await destination.exists()) {
+      final int sourceLength = await source.length();
+      final int destinationLength = await destination.length();
+      if (sourceLength == destinationLength && destinationLength > 0) {
+        return;
+      }
+    }
+
+    final File tempFile = File('${destination.path}.migrate_tmp');
+    if (await tempFile.exists()) {
+      await tempFile.delete();
+    }
+    await source.copy(tempFile.path);
+    if (await destination.exists()) {
+      await destination.delete();
+    }
+    await tempFile.rename(destination.path);
+  }
+
+  bool _shouldSkipMigrationFile(String fileName) {
+    final String normalized = fileName.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    return normalized.endsWith('.part') ||
+        normalized.endsWith('.migrate_tmp') ||
+        normalized.startsWith('.storage_probe_');
   }
 
   String _normalizedPath(String value) {

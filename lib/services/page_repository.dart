@@ -208,7 +208,7 @@ class PageRepository {
     NavigationRequestContext? requestContext,
   }) async {
     final EasyCopyPage page = _isProfileUri(uri)
-        ? await _apiClient.loadProfile()
+        ? await _apiClient.loadProfile(uri: uri)
         : _isSearchUri(uri)
         ? await _apiClient.loadSearchResults(
             query: uri.queryParameters['q'] ?? '',

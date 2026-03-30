@@ -302,6 +302,10 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
             _openProfileSubview(ProfileSubview.collections),
         onOpenHistoryPage: () => _openProfileSubview(ProfileSubview.history),
         onOpenCachedComicPage: () => _openProfileSubview(ProfileSubview.cached),
+        onOpenCollectionsPage: (int page) =>
+            _openProfileSubview(ProfileSubview.collections, page: page),
+        onOpenHistoryPageNumber: (int page) =>
+            _openProfileSubview(ProfileSubview.history, page: page),
         currentHost: _hostManager.currentHost,
         candidateHosts: _hostManager.candidateHosts,
         hostSnapshot: _hostManager.probeSnapshot,

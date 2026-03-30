@@ -27,6 +27,18 @@ class SiteLoginResult {
       .join('; ');
 }
 
+class _PagedProfileSection {
+  const _PagedProfileSection({
+    this.items = const <Map<String, Object?>>[],
+    this.pager = const PagerData(),
+    this.total = 0,
+  });
+
+  final List<Map<String, Object?>> items;
+  final PagerData pager;
+  final int total;
+}
+
 class SiteApiClient {
   SiteApiClient({http.Client? client, SiteSession? session})
     : _client = client ?? http.Client(),
@@ -37,6 +49,7 @@ class SiteApiClient {
   final http.Client _client;
   final SiteSession _session;
   static const int _searchPageSize = 12;
+  static const int _profilePageSize = 20;
 
   Future<SiteLoginResult> login({
     required String username,
@@ -70,42 +83,63 @@ class SiteApiClient {
     throw SiteApiException('登录失败，请稍后重试。');
   }
 
-  Future<ProfilePageData> loadProfile() async {
+  Future<ProfilePageData> loadProfile({Uri? uri}) async {
     await _session.ensureInitialized();
+    final Uri targetUri = AppConfig.rewriteToCurrentHost(
+      uri ?? AppConfig.profileUri,
+    );
+    final ProfileSubview activeSubview = AppConfig.profileSubviewForUri(
+      targetUri,
+    );
+    final int activePage = AppConfig.profilePageForUri(targetUri);
     if (!_session.isAuthenticated || (_session.token ?? '').isEmpty) {
-      return ProfilePageData.loggedOut(uri: AppConfig.profileUri.toString());
+      return ProfilePageData.loggedOut(uri: targetUri.toString());
     }
 
     final Future<Map<String, Object?>> userFuture = _getJson(
       '/api/v2/web/user/info',
     );
-    final Future<List<Map<String, Object?>>> collectionsFuture =
-        _getPagedListOrEmpty(const <String>['/api/v3/member/collect/comics']);
-    final Future<List<Map<String, Object?>>> historyFuture =
-        _getPagedListOrEmpty(const <String>[
-          '/api/kb/web/browses',
-          '/api/v2/web/browses',
-        ]);
+    final Future<_PagedProfileSection> collectionsFuture =
+        activeSubview == ProfileSubview.history
+        ? Future<_PagedProfileSection>.value(const _PagedProfileSection())
+        : _getPagedListOrEmpty(
+            const <String>['/api/v3/member/collect/comics'],
+            view: ProfileSubview.collections,
+            page: activeSubview == ProfileSubview.collections ? activePage : 1,
+          );
+    final Future<_PagedProfileSection> historyFuture =
+        activeSubview == ProfileSubview.collections
+        ? Future<_PagedProfileSection>.value(const _PagedProfileSection())
+        : _getPagedListOrEmpty(
+            const <String>['/api/kb/web/browses', '/api/v2/web/browses'],
+            view: ProfileSubview.history,
+            page: activeSubview == ProfileSubview.history ? activePage : 1,
+          );
 
     final Map<String, Object?> userPayload = await userFuture;
-    final List<Map<String, Object?>> collectionsPayload =
-        await collectionsFuture;
-    final List<Map<String, Object?>> historyPayload = await historyFuture;
+    final _PagedProfileSection collectionsPayload = await collectionsFuture;
+    final _PagedProfileSection historyPayload = await historyFuture;
 
     final ProfileUserData user = _parseUser(userPayload);
     await _session.bindUserId(user.userId);
     final List<ProfileLibraryItem> collections = _parseCollections(
-      collectionsPayload,
+      collectionsPayload.items,
     );
-    final List<ProfileHistoryItem> history = _parseHistory(historyPayload);
+    final List<ProfileHistoryItem> history = _parseHistory(
+      historyPayload.items,
+    );
 
     return ProfilePageData(
       title: '我的',
-      uri: AppConfig.profileUri.toString(),
+      uri: targetUri.toString(),
       isLoggedIn: true,
       user: user,
       collections: collections,
       history: history,
+      collectionsPager: collectionsPayload.pager,
+      historyPager: historyPayload.pager,
+      collectionsTotal: collectionsPayload.total,
+      historyTotal: historyPayload.total,
       continueReading: history.isEmpty ? null : history.first,
     );
   }
@@ -366,13 +400,15 @@ class SiteApiClient {
     );
   }
 
-  Future<List<Map<String, Object?>>> _getPagedListOrEmpty(
-    List<String> paths,
-  ) async {
+  Future<_PagedProfileSection> _getPagedListOrEmpty(
+    List<String> paths, {
+    required ProfileSubview view,
+    required int page,
+  }) async {
     Object? lastError;
     for (final String path in paths) {
       try {
-        return await _getPagedList(path);
+        return await _getPagedList(path, view: view, page: page);
       } catch (error) {
         lastError = error;
       }
@@ -380,56 +416,100 @@ class SiteApiClient {
     if (lastError is SiteApiException && lastError.message.contains('登录已失效')) {
       throw lastError;
     }
-    return const <Map<String, Object?>>[];
+    return _emptyPagedSection(view: view, page: page);
   }
 
-  Future<List<Map<String, Object?>>> _getPagedList(String path) async {
-    final Map<String, Object?> payload = await _getJson(path);
+  Future<_PagedProfileSection> _getPagedList(
+    String path, {
+    required ProfileSubview view,
+    required int page,
+  }) async {
+    final int normalizedPage = page < 1 ? 1 : page;
+    final int offset = (normalizedPage - 1) * _profilePageSize;
+    final Map<String, Object?> payload = await _getJson(
+      path,
+      queryParameters: <String, String>{
+        'offset': '$offset',
+        'limit': '$_profilePageSize',
+      },
+    );
     final Map<String, Object?> results = _asMap(payload['results']);
-    final List<Map<String, Object?>> merged = <Map<String, Object?>>[
+    final List<Map<String, Object?>> items = <Map<String, Object?>>[
       ..._extractList(results),
     ];
     final int total = _pickInt(results, const <String>[
       'total',
       'count',
       'total_count',
-    ], fallback: merged.length);
+    ], fallback: items.length);
     final int limit = _pickInt(results, const <String>[
       'limit',
       'page_size',
       'pageSize',
-    ], fallback: merged.isEmpty ? 0 : merged.length);
-    final int firstOffset = _pickInt(results, const <String>['offset']);
-    if (limit <= 0 || merged.length >= total) {
-      return merged;
-    }
-
-    final List<Future<Map<String, Object?>>> pageFutures =
-        <Future<Map<String, Object?>>>[
-          for (
-            int offset = firstOffset + limit;
-            offset < total;
-            offset += limit
-          )
-            _getJson(
-              path,
-              queryParameters: <String, String>{
-                'offset': '$offset',
-                'limit': '$limit',
-              },
-            ),
-        ];
-    if (pageFutures.isEmpty) {
-      return merged;
-    }
-
-    final List<Map<String, Object?>> pagePayloads = await Future.wait(
-      pageFutures,
+    ], fallback: _profilePageSize);
+    final int effectiveLimit = limit <= 0 ? _profilePageSize : limit;
+    final int totalPages = total <= 0
+        ? 1
+        : ((total + effectiveLimit - 1) / effectiveLimit).floor();
+    final int clampedPage = normalizedPage > totalPages
+        ? totalPages
+        : normalizedPage;
+    return _PagedProfileSection(
+      items: items,
+      total: total,
+      pager: _buildProfilePager(
+        view: view,
+        currentPage: clampedPage,
+        totalPages: totalPages,
+        totalItems: total,
+      ),
     );
-    for (final Map<String, Object?> pagePayload in pagePayloads) {
-      merged.addAll(_extractList(pagePayload['results']));
-    }
-    return merged;
+  }
+
+  _PagedProfileSection _emptyPagedSection({
+    required ProfileSubview view,
+    required int page,
+  }) {
+    final int normalizedPage = page < 1 ? 1 : page;
+    return _PagedProfileSection(
+      pager: _buildProfilePager(
+        view: view,
+        currentPage: normalizedPage,
+        totalPages: 1,
+        totalItems: 0,
+      ),
+    );
+  }
+
+  PagerData _buildProfilePager({
+    required ProfileSubview view,
+    required int currentPage,
+    required int totalPages,
+    required int totalItems,
+  }) {
+    final int normalizedCurrentPage = currentPage < 1 ? 1 : currentPage;
+    final int normalizedTotalPages = totalPages < 1 ? 1 : totalPages;
+    final String itemUnit = switch (view) {
+      ProfileSubview.collections => '部',
+      ProfileSubview.history => '条',
+      _ => '条',
+    };
+    return PagerData(
+      currentLabel: '$normalizedCurrentPage',
+      totalLabel: '共$normalizedTotalPages页 · $totalItems$itemUnit',
+      prevHref: normalizedCurrentPage > 1
+          ? AppConfig.buildProfileUri(
+              view: view,
+              page: normalizedCurrentPage - 1,
+            ).toString()
+          : '',
+      nextHref: normalizedCurrentPage < normalizedTotalPages
+          ? AppConfig.buildProfileUri(
+              view: view,
+              page: normalizedCurrentPage + 1,
+            ).toString()
+          : '',
+    );
   }
 
   ProfileUserData _parseUser(Map<String, Object?> payload) {

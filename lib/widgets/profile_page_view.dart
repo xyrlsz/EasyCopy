@@ -21,6 +21,8 @@ class ProfilePageView extends StatelessWidget {
     required this.onOpenCollections,
     required this.onOpenHistoryPage,
     required this.onOpenCachedComicPage,
+    this.onOpenCollectionsPage,
+    this.onOpenHistoryPageNumber,
     this.onOpenCachedComic,
     this.onDeleteCachedComic,
     this.currentHost = '',
@@ -46,6 +48,8 @@ class ProfilePageView extends StatelessWidget {
   final VoidCallback onOpenCollections;
   final VoidCallback onOpenHistoryPage;
   final VoidCallback onOpenCachedComicPage;
+  final ValueChanged<int>? onOpenCollectionsPage;
+  final ValueChanged<int>? onOpenHistoryPageNumber;
   final ValueChanged<String>? onOpenCachedComic;
   final ValueChanged<String>? onDeleteCachedComic;
   final String currentHost;
@@ -73,6 +77,12 @@ class ProfilePageView extends StatelessWidget {
     final List<ComicCardData> historyCards = page.history
         .map(_historyCardData)
         .toList(growable: false);
+    final int collectionsTotal = page.collectionsTotal > 0
+        ? page.collectionsTotal
+        : collectionCards.length;
+    final int historyTotal = page.historyTotal > 0
+        ? page.historyTotal
+        : historyCards.length;
 
     if (activeSubview == ProfileSubview.cached) {
       return _buildComicCollectionSection(
@@ -92,19 +102,23 @@ class ProfilePageView extends StatelessWidget {
           return _buildComicCollectionSection(
             context,
             title: '我的收藏',
-            summary: '共 ${collectionCards.length} 部漫画',
+            summary: '共 $collectionsTotal 部漫画',
             items: collectionCards,
             emptyMessage: '还没有收藏的漫画。',
             onTap: onOpenComic,
+            pager: page.collectionsPager,
+            onOpenPage: onOpenCollectionsPage,
           );
         case ProfileSubview.history:
           return _buildComicCollectionSection(
             context,
             title: '浏览历史',
-            summary: '共 ${historyCards.length} 条记录',
+            summary: '共 $historyTotal 条记录',
             items: historyCards,
             emptyMessage: '还没有浏览历史。',
             onTap: onOpenComic,
+            pager: page.historyPager,
+            onOpenPage: onOpenHistoryPageNumber,
           );
         case ProfileSubview.root:
         case ProfileSubview.cached:
@@ -216,7 +230,7 @@ class ProfilePageView extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              _SectionCaption('共 ${collectionCards.length} 部漫画'),
+              _SectionCaption('共 $collectionsTotal 部漫画'),
               const SizedBox(height: 14),
               SizedBox(
                 height: 232,
@@ -253,7 +267,7 @@ class ProfilePageView extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              _SectionCaption('最近浏览 ${historyCards.length} 条记录'),
+              _SectionCaption('最近浏览 $historyTotal 条记录'),
               const SizedBox(height: 14),
               SizedBox(
                 height: 232,
@@ -309,6 +323,8 @@ class ProfilePageView extends StatelessWidget {
     required String emptyMessage,
     required ValueChanged<String> onTap,
     ValueChanged<String>? onLongPress,
+    PagerData pager = const PagerData(),
+    ValueChanged<int>? onOpenPage,
   }) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
     return _SectionCard(
@@ -330,9 +346,20 @@ class ProfilePageView extends StatelessWidget {
             onLongPress: onLongPress,
             emptyMessage: emptyMessage,
           ),
+          if (_shouldShowPager(pager)) ...<Widget>[
+            const SizedBox(height: 16),
+            _ProfilePagerBar(pager: pager, onOpenPage: onOpenPage),
+          ],
         ],
       ),
     );
+  }
+
+  bool _shouldShowPager(PagerData pager) {
+    final int? totalPages = pager.totalPageCount;
+    return pager.hasPrev ||
+        pager.hasNext ||
+        (totalPages != null && totalPages > 1);
   }
 
   Widget _buildLoggedOutCard() {
@@ -427,6 +454,72 @@ class ProfilePageView extends StatelessWidget {
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ProfilePagerBar extends StatelessWidget {
+  const _ProfilePagerBar({required this.pager, this.onOpenPage});
+
+  final PagerData pager;
+  final ValueChanged<int>? onOpenPage;
+
+  @override
+  Widget build(BuildContext context) {
+    final int currentPage = pager.currentPageNumber ?? 1;
+    final int totalPages = pager.totalPageCount ?? 1;
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: FilledButton.tonal(
+              onPressed: pager.hasPrev && onOpenPage != null
+                  ? () => onOpenPage!(currentPage - 1)
+                  : null,
+              child: const Text('上一页'),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  '$currentPage / $totalPages',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                if (pager.totalLabel.isNotEmpty)
+                  Text(
+                    pager.totalLabel,
+                    style: TextStyle(
+                      color: colorScheme.onSurface.withValues(alpha: 0.68),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: FilledButton(
+              onPressed: pager.hasNext && onOpenPage != null
+                  ? () => onOpenPage!(currentPage + 1)
+                  : null,
+              child: const Text('下一页'),
+            ),
+          ),
         ],
       ),
     );
