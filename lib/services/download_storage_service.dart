@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:easy_copy/models/app_preferences.dart';
+import 'package:easy_copy/services/android_document_tree_bridge.dart';
 import 'package:easy_copy/services/app_preferences_controller.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
@@ -18,8 +19,10 @@ class DownloadStorageState {
     required this.basePath,
     required this.rootPath,
     required this.isCustom,
+    required this.isDocumentTree,
     required this.isWritable,
     required this.mayBeRemovedOnUninstall,
+    this.documentTreeUri = '',
     this.errorMessage = '',
     this.isLoading = false,
   });
@@ -29,8 +32,10 @@ class DownloadStorageState {
       basePath = '',
       rootPath = '',
       isCustom = false,
+      isDocumentTree = false,
       isWritable = false,
       mayBeRemovedOnUninstall = false,
+      documentTreeUri = '',
       errorMessage = '',
       isLoading = true;
 
@@ -38,8 +43,10 @@ class DownloadStorageState {
   final String basePath;
   final String rootPath;
   final bool isCustom;
+  final bool isDocumentTree;
   final bool isWritable;
   final bool mayBeRemovedOnUninstall;
+  final String documentTreeUri;
   final String errorMessage;
   final bool isLoading;
 
@@ -61,6 +68,7 @@ class DownloadStorageService {
     DownloadExternalStorageDirectoriesProvider?
     androidExternalStorageDirectoriesProvider,
     DownloadBaseDirectoriesProvider? androidExternalCacheDirectoriesProvider,
+    AndroidDocumentTreeBridge? documentTreeBridge,
   }) : _preferencesController =
            preferencesController ?? AppPreferencesController.instance,
        _preferencesProvider = preferencesProvider,
@@ -73,6 +81,8 @@ class DownloadStorageService {
        _androidExternalCacheDirectoriesProvider =
            androidExternalCacheDirectoriesProvider ??
            _defaultAndroidExternalCacheDirectories,
+       _documentTreeBridge =
+           documentTreeBridge ?? AndroidDocumentTreeBridge.instance,
        _supportsCustomDirectorySelection =
            Platform.isAndroid ||
            customBaseDirectoriesProvider != null ||
@@ -90,6 +100,7 @@ class DownloadStorageService {
   _androidExternalStorageDirectoriesProvider;
   final DownloadBaseDirectoriesProvider
   _androidExternalCacheDirectoriesProvider;
+  final AndroidDocumentTreeBridge _documentTreeBridge;
   final bool _supportsCustomDirectorySelection;
 
   bool get supportsCustomDirectorySelection =>
@@ -101,16 +112,25 @@ class DownloadStorageService {
   }) async {
     final DownloadPreferences resolvedPreferences =
         preferences ?? await _loadPreferences();
+    if (resolvedPreferences.usesDocumentTree) {
+      return _resolveDocumentTreeState(
+        resolvedPreferences,
+        verifyWritable: verifyWritable,
+      );
+    }
     final String rawBasePath = resolvedPreferences.usesCustomDirectory
         ? resolvedPreferences.customBasePath.trim()
         : (await _defaultBaseDirectoryProvider()).path;
     final bool isCustom = resolvedPreferences.usesCustomDirectory;
+    final bool usePickedDirectoryAsRoot =
+        isCustom && resolvedPreferences.usePickedDirectoryAsRoot;
     if (rawBasePath.isEmpty) {
       return DownloadStorageState(
         preferences: resolvedPreferences,
         basePath: '',
         rootPath: '',
         isCustom: isCustom,
+        isDocumentTree: false,
         isWritable: false,
         mayBeRemovedOnUninstall: _mayBeRemovedOnUninstall(
           isCustom: isCustom,
@@ -121,9 +141,11 @@ class DownloadStorageService {
     }
 
     final Directory baseDirectory = Directory(rawBasePath);
-    final Directory rootDirectory = Directory(
-      _joinPath(<String>[baseDirectory.path, downloadsDirectoryName]),
-    );
+    final Directory rootDirectory = usePickedDirectoryAsRoot
+        ? baseDirectory
+        : Directory(
+            _joinPath(<String>[baseDirectory.path, downloadsDirectoryName]),
+          );
     try {
       await rootDirectory.create(recursive: true);
       if (verifyWritable) {
@@ -134,6 +156,7 @@ class DownloadStorageService {
         basePath: baseDirectory.path,
         rootPath: rootDirectory.path,
         isCustom: isCustom,
+        isDocumentTree: false,
         isWritable: true,
         mayBeRemovedOnUninstall: _mayBeRemovedOnUninstall(
           isCustom: isCustom,
@@ -146,6 +169,7 @@ class DownloadStorageService {
         basePath: baseDirectory.path,
         rootPath: rootDirectory.path,
         isCustom: isCustom,
+        isDocumentTree: false,
         isWritable: false,
         mayBeRemovedOnUninstall: _mayBeRemovedOnUninstall(
           isCustom: isCustom,
@@ -159,6 +183,7 @@ class DownloadStorageService {
         basePath: baseDirectory.path,
         rootPath: rootDirectory.path,
         isCustom: isCustom,
+        isDocumentTree: false,
         isWritable: false,
         mayBeRemovedOnUninstall: _mayBeRemovedOnUninstall(
           isCustom: isCustom,
@@ -204,6 +229,7 @@ class DownloadStorageService {
         preferences: DownloadPreferences(
           mode: DownloadStorageMode.customDirectory,
           customBasePath: basePath,
+          usePickedDirectoryAsRoot: true,
         ),
         verifyWritable: true,
       );
@@ -217,6 +243,13 @@ class DownloadStorageService {
           left.basePath.compareTo(right.basePath),
     );
     return candidates;
+  }
+
+  Future<PickedDocumentTreeDirectory?> pickDocumentTreeDirectory() {
+    if (!_documentTreeBridge.isSupported) {
+      return Future<PickedDocumentTreeDirectory?>.value(null);
+    }
+    return _documentTreeBridge.pickDirectory();
   }
 
   String summarizePath(String path) {
@@ -245,6 +278,70 @@ class DownloadStorageService {
     }
     await _preferencesController.ensureInitialized();
     return _preferencesController.downloadPreferences;
+  }
+
+  Future<DownloadStorageState> _resolveDocumentTreeState(
+    DownloadPreferences preferences, {
+    required bool verifyWritable,
+  }) async {
+    final String treeUri = preferences.customTreeUri.trim();
+    final String fallbackBasePath = preferences.displayPath;
+    final bool usePickedDirectoryAsRoot = preferences.usePickedDirectoryAsRoot;
+    final String fallbackRootPath =
+        usePickedDirectoryAsRoot || fallbackBasePath.isEmpty
+        ? fallbackBasePath
+        : '$fallbackBasePath${Platform.pathSeparator}$downloadsDirectoryName';
+    if (treeUri.isEmpty) {
+      return DownloadStorageState(
+        preferences: preferences,
+        basePath: fallbackBasePath,
+        rootPath: fallbackRootPath,
+        isCustom: true,
+        isDocumentTree: true,
+        isWritable: false,
+        mayBeRemovedOnUninstall: false,
+        documentTreeUri: treeUri,
+        errorMessage: '尚未设置自定义缓存目录。',
+      );
+    }
+
+    try {
+      final DocumentTreeDirectoryResolution resolution =
+          await _documentTreeBridge.resolveDirectory(
+            treeUri: treeUri,
+            relativePath: usePickedDirectoryAsRoot
+                ? ''
+                : downloadsDirectoryName,
+            verifyWritable: verifyWritable,
+          );
+      return DownloadStorageState(
+        preferences: preferences,
+        basePath: resolution.basePath.isEmpty
+            ? fallbackBasePath
+            : resolution.basePath,
+        rootPath: resolution.rootPath.isEmpty
+            ? fallbackRootPath
+            : resolution.rootPath,
+        isCustom: true,
+        isDocumentTree: true,
+        isWritable: resolution.isWritable,
+        mayBeRemovedOnUninstall: false,
+        documentTreeUri: treeUri,
+        errorMessage: resolution.errorMessage,
+      );
+    } catch (error) {
+      return DownloadStorageState(
+        preferences: preferences,
+        basePath: fallbackBasePath,
+        rootPath: fallbackRootPath,
+        isCustom: true,
+        isDocumentTree: true,
+        isWritable: false,
+        mayBeRemovedOnUninstall: false,
+        documentTreeUri: treeUri,
+        errorMessage: error.toString(),
+      );
+    }
   }
 
   Future<List<Directory>> _loadCustomBaseDirectories() async {

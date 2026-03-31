@@ -8,6 +8,7 @@ import 'package:easy_copy/config/app_config.dart';
 import 'package:easy_copy/models/app_preferences.dart';
 import 'package:easy_copy/models/page_models.dart';
 import 'package:easy_copy/page_transition_scope.dart';
+import 'package:easy_copy/services/android_document_tree_bridge.dart';
 import 'package:easy_copy/services/app_preferences_controller.dart';
 import 'package:easy_copy/services/comic_download_service.dart';
 import 'package:easy_copy/services/deferred_viewport_coordinator.dart';
@@ -15,6 +16,7 @@ import 'package:easy_copy/services/download_queue_manager.dart';
 import 'package:easy_copy/services/discover_filter_selection.dart';
 import 'package:easy_copy/services/display_mode_service.dart';
 import 'package:easy_copy/services/download_storage_service.dart';
+import 'package:easy_copy/services/document_tree_image_provider.dart';
 import 'package:easy_copy/services/download_queue_store.dart';
 import 'package:easy_copy/services/host_manager.dart';
 import 'package:easy_copy/services/image_cache.dart';
@@ -538,10 +540,8 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
 
     setState(() {});
 
-    final bool downloadPreferencesChanged =
-        previousDownloadPreferences.mode != nextDownloadPreferences.mode ||
-        previousDownloadPreferences.customBasePath !=
-            nextDownloadPreferences.customBasePath;
+    final bool downloadPreferencesChanged = !previousDownloadPreferences
+        .hasSameStorageLocation(nextDownloadPreferences);
     if (downloadPreferencesChanged) {
       unawaited(_refreshDownloadStorageState());
       unawaited(_refreshCachedComics());
@@ -1140,6 +1140,23 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         !_canEditDownloadStorage()) {
       return;
     }
+    final PickedDocumentTreeDirectory? pickedDirectory =
+        await _downloadStorageService.pickDocumentTreeDirectory();
+    if (pickedDirectory != null) {
+      final DownloadPreferences nextPreferences = DownloadPreferences(
+        mode: DownloadStorageMode.customDirectory,
+        customBasePath: '',
+        customTreeUri: pickedDirectory.treeUri,
+        customDisplayPath: pickedDirectory.displayName,
+        usePickedDirectoryAsRoot: true,
+      );
+      await _applyDownloadStoragePreferences(
+        nextPreferences,
+        successMessage: '已切换到新的存储位置',
+      );
+      return;
+    }
+
     final List<DownloadStorageState> candidates = await _downloadQueueManager
         .loadStorageCandidates();
     if (!mounted) {
@@ -1157,6 +1174,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     final DownloadPreferences nextPreferences = DownloadPreferences(
       mode: DownloadStorageMode.customDirectory,
       customBasePath: selectedState.basePath,
+      customTreeUri: '',
+      customDisplayPath: selectedState.basePath,
+      usePickedDirectoryAsRoot: true,
     );
     await _applyDownloadStoragePreferences(
       nextPreferences,

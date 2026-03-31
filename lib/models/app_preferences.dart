@@ -29,6 +29,9 @@ class DownloadPreferences {
   const DownloadPreferences({
     this.mode = DownloadStorageMode.defaultDirectory,
     this.customBasePath = '',
+    this.customTreeUri = '',
+    this.customDisplayPath = '',
+    this.usePickedDirectoryAsRoot = false,
   });
 
   factory DownloadPreferences.fromJson(Map<String, Object?> json) {
@@ -39,23 +42,59 @@ class DownloadPreferences {
         DownloadStorageMode.defaultDirectory,
       ),
       customBasePath: (json['customBasePath'] as String?)?.trim() ?? '',
+      customTreeUri: (json['customTreeUri'] as String?)?.trim() ?? '',
+      customDisplayPath: (json['customDisplayPath'] as String?)?.trim() ?? '',
+      usePickedDirectoryAsRoot:
+          (json['usePickedDirectoryAsRoot'] as bool?) ?? false,
     );
   }
 
   final DownloadStorageMode mode;
   final String customBasePath;
+  final String customTreeUri;
+  final String customDisplayPath;
+  final bool usePickedDirectoryAsRoot;
+
+  bool get usesDocumentTree =>
+      mode == DownloadStorageMode.customDirectory &&
+      customTreeUri.trim().isNotEmpty;
 
   bool get usesCustomDirectory =>
       mode == DownloadStorageMode.customDirectory &&
-      customBasePath.trim().isNotEmpty;
+      (customTreeUri.trim().isNotEmpty || customBasePath.trim().isNotEmpty);
+
+  String get displayPath {
+    final String preferredDisplayPath = customDisplayPath.trim();
+    if (preferredDisplayPath.isNotEmpty) {
+      return preferredDisplayPath;
+    }
+    if (usesDocumentTree) {
+      return customTreeUri.trim();
+    }
+    return customBasePath.trim();
+  }
+
+  bool hasSameStorageLocation(DownloadPreferences other) {
+    return mode == other.mode &&
+        customBasePath.trim() == other.customBasePath.trim() &&
+        customTreeUri.trim() == other.customTreeUri.trim() &&
+        usePickedDirectoryAsRoot == other.usePickedDirectoryAsRoot;
+  }
 
   DownloadPreferences copyWith({
     DownloadStorageMode? mode,
     String? customBasePath,
+    String? customTreeUri,
+    String? customDisplayPath,
+    bool? usePickedDirectoryAsRoot,
   }) {
     return DownloadPreferences(
       mode: mode ?? this.mode,
       customBasePath: customBasePath ?? this.customBasePath,
+      customTreeUri: customTreeUri ?? this.customTreeUri,
+      customDisplayPath: customDisplayPath ?? this.customDisplayPath,
+      usePickedDirectoryAsRoot:
+          usePickedDirectoryAsRoot ?? this.usePickedDirectoryAsRoot,
     );
   }
 
@@ -63,6 +102,9 @@ class DownloadPreferences {
     return <String, Object?>{
       'mode': _enumName(mode),
       'customBasePath': customBasePath,
+      'customTreeUri': customTreeUri,
+      'customDisplayPath': customDisplayPath,
+      'usePickedDirectoryAsRoot': usePickedDirectoryAsRoot,
     };
   }
 }

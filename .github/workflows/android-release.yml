@@ -21,10 +21,11 @@ permissions:
 
 jobs:
   build-android-release:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     env:
       FLUTTER_VERSION: "3.38.7"
       JAVA_VERSION: "17"
+      PUB_CACHE: ${{ github.workspace }}/.pub-cache
 
     steps:
       - name: Checkout
@@ -48,124 +49,124 @@ jobs:
 
       - name: Resolve release metadata
         id: meta
-        shell: pwsh
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
+          set -euo pipefail
 
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $releaseTag = "${{ github.event.inputs.tag }}"
-            $prereleaseFlag = "${{ github.event.inputs.prerelease }}"
-          } else {
-            $releaseTag = "${{ github.ref_name }}"
-            $prereleaseFlag = "false"
-          }
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            release_tag="${{ github.event.inputs.tag }}"
+            prerelease_flag="${{ github.event.inputs.prerelease }}"
+          else
+            release_tag="${{ github.ref_name }}"
+            prerelease_flag="false"
+          fi
 
-          $versionLine = (Select-String -Path pubspec.yaml -Pattern '^version:\s+(.+)$').Matches[0].Groups[1].Value.Trim()
-          if ([string]::IsNullOrWhiteSpace($versionLine)) {
-            throw "Could not read version from pubspec.yaml."
-          }
+          version_line="$(sed -nE 's/^version:[[:space:]]+(.+)$/\1/p' pubspec.yaml | head -n1)"
+          if [[ -z "$version_line" ]]; then
+            echo "Could not read version from pubspec.yaml." >&2
+            exit 1
+          fi
 
-          $appVersion = $versionLine.Split('+')[0]
-          $buildNumber = $versionLine.Split('+')[-1]
-          $expectedTag = "v$appVersion"
-          $notesPath = ".github/release-notes/$releaseTag.md"
+          app_version="${version_line%%+*}"
+          build_number="${version_line##*+}"
+          expected_tag="v${app_version}"
+          notes_path=".github/release-notes/${release_tag}.md"
 
-          if ($releaseTag -ne $expectedTag) {
-            throw "Tag $releaseTag does not match pubspec version $appVersion. Expected $expectedTag."
-          }
+          if [[ "$release_tag" != "$expected_tag" ]]; then
+            echo "Tag ${release_tag} does not match pubspec version ${app_version}. Expected ${expected_tag}." >&2
+            exit 1
+          fi
 
-          if (Test-Path $notesPath) {
-            "has_custom_notes=true" >> $env:GITHUB_OUTPUT
-            "release_notes_path=$notesPath" >> $env:GITHUB_OUTPUT
-          } else {
-            "has_custom_notes=false" >> $env:GITHUB_OUTPUT
-            "release_notes_path=" >> $env:GITHUB_OUTPUT
-          }
+          if [[ -f "$notes_path" ]]; then
+            echo "has_custom_notes=true" >> "$GITHUB_OUTPUT"
+            echo "release_notes_path=$notes_path" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_custom_notes=false" >> "$GITHUB_OUTPUT"
+            echo "release_notes_path=" >> "$GITHUB_OUTPUT"
+          fi
 
-          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
-          "release_title=EasyCopy $appVersion" >> $env:GITHUB_OUTPUT
-          "app_version=$appVersion" >> $env:GITHUB_OUTPUT
-          "build_number=$buildNumber" >> $env:GITHUB_OUTPUT
-          "prerelease=$prereleaseFlag" >> $env:GITHUB_OUTPUT
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "release_title=EasyCopy $app_version" >> "$GITHUB_OUTPUT"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease_flag" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       - name: Analyze
         run: flutter analyze
 
       - name: Validate signing secrets
-        shell: pwsh
+        shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          $ErrorActionPreference = 'Stop'
+          set -euo pipefail
 
-          foreach ($name in @(
-            'ANDROID_KEYSTORE_BASE64',
-            'ANDROID_STORE_PASSWORD',
-            'ANDROID_KEY_ALIAS',
-            'ANDROID_KEY_PASSWORD'
-          )) {
-            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
-              throw "Missing required secret: $name"
-            }
-          }
+          for name in \
+            ANDROID_KEYSTORE_BASE64 \
+            ANDROID_STORE_PASSWORD \
+            ANDROID_KEY_ALIAS \
+            ANDROID_KEY_PASSWORD
+          do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
 
       - name: Decode Android keystore
-        shell: pwsh
+        shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          [IO.File]::WriteAllBytes(
-            "android/upload-keystore.jks",
-            [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64)
-          )
+          set -euo pipefail
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/upload-keystore.jks
 
       - name: Build signed APKs (armeabi-v7a, arm64-v8a, x86_64)
-        shell: pwsh
+        shell: bash
         env:
-          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}\android\upload-keystore.jks
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/upload-keystore.jks
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          $ErrorActionPreference = 'Stop'
-
-          flutter build apk `
-            --release `
-            --target-platform=android-arm,android-arm64,android-x64 `
-            --split-per-abi `
+          set -euo pipefail
+          flutter build apk \
+            --release \
+            --target-platform=android-arm,android-arm64,android-x64 \
+            --split-per-abi \
             --tree-shake-icons
 
       - name: Prepare release assets
-        shell: pwsh
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
+          set -euo pipefail
 
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          mkdir -p dist
 
-          $version = "${{ steps.meta.outputs.app_version }}"
-          $apkOutputs = @(
-            @{ abi = 'armeabi-v7a'; source = 'build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk' },
-            @{ abi = 'arm64-v8a';   source = 'build/app/outputs/flutter-apk/app-arm64-v8a-release.apk' },
-            @{ abi = 'x86_64';      source = 'build/app/outputs/flutter-apk/app-x86_64-release.apk' }
+          version="${{ steps.meta.outputs.app_version }}"
+          apk_outputs=(
+            "armeabi-v7a build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk"
+            "arm64-v8a build/app/outputs/flutter-apk/app-arm64-v8a-release.apk"
+            "x86_64 build/app/outputs/flutter-apk/app-x86_64-release.apk"
           )
 
-          foreach ($apk in $apkOutputs) {
-            $source = $apk.source
-            if (-not (Test-Path $source)) {
-              throw "APK not found: $source"
-            }
+          for spec in "${apk_outputs[@]}"; do
+            abi="${spec%% *}"
+            source="${spec#* }"
 
-            $apkName = "EasyCopy-$version-android-$($apk.abi).apk"
-            $target = Join-Path "dist" $apkName
-            Copy-Item $source $target -Force
-          }
+            if [[ ! -f "$source" ]]; then
+              echo "APK not found: $source" >&2
+              exit 1
+            fi
+
+            cp "$source" "dist/EasyCopy-${version}-android-${abi}.apk"
+          done
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4

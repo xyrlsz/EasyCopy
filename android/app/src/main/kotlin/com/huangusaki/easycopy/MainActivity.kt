@@ -9,16 +9,17 @@ import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.WindowManager
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterFragmentActivity() {
     private var volumePagingEnabled = false
     private var batteryReceiver: BroadcastReceiver? = null
     private var batteryEventSink: EventChannel.EventSink? = null
     private var volumeKeyEventSink: EventChannel.EventSink? = null
+    private var documentTreeStorageBridge: DocumentTreeStorageBridge? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,6 +34,11 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        documentTreeStorageBridge =
+            DocumentTreeStorageBridge(
+                activity = this,
+                binaryMessenger = flutterEngine.dartExecutor.binaryMessenger,
+            )
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -129,6 +135,8 @@ class MainActivity : FlutterActivity() {
         batteryReceiver = null
         batteryEventSink = null
         volumeKeyEventSink = null
+        documentTreeStorageBridge?.dispose()
+        documentTreeStorageBridge = null
         super.onDestroy()
     }
 

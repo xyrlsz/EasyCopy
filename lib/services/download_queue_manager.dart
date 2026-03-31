@@ -252,8 +252,7 @@ class DownloadQueueManager {
   ) async {
     final DownloadPreferences currentPreferences =
         _preferencesController.downloadPreferences;
-    if (currentPreferences.mode == nextPreferences.mode &&
-        currentPreferences.customBasePath == nextPreferences.customBasePath) {
+    if (currentPreferences.hasSameStorageLocation(nextPreferences)) {
       return null;
     }
 

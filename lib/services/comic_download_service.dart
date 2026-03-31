@@ -1,9 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:easy_copy/config/app_config.dart';
 import 'package:easy_copy/models/app_preferences.dart';
 import 'package:easy_copy/models/page_models.dart';
+import 'package:easy_copy/services/android_document_tree_bridge.dart';
 import 'package:easy_copy/services/download_storage_service.dart';
 import 'package:easy_copy/services/download_queue_store.dart';
 import 'package:http/http.dart' as http;
@@ -112,7 +114,10 @@ class ComicDownloadService {
     http.Client? client,
     Future<Directory> Function()? baseDirectoryProvider,
     DownloadStorageService? storageService,
+    AndroidDocumentTreeBridge? documentTreeBridge,
   }) : _client = client ?? http.Client(),
+       _documentTreeBridge =
+           documentTreeBridge ?? AndroidDocumentTreeBridge.instance,
        _storageService =
            storageService ??
            DownloadStorageService(
@@ -125,6 +130,7 @@ class ComicDownloadService {
   static final ComicDownloadService instance = ComicDownloadService();
 
   final http.Client _client;
+  final AndroidDocumentTreeBridge _documentTreeBridge;
   final DownloadStorageService _storageService;
 
   bool get supportsCustomStorageSelection =>
@@ -159,7 +165,7 @@ class ComicDownloadService {
       throw FileSystemException('当前章节没有可下载图片。');
     }
 
-    final Directory rootDirectory = await _downloadsRootDirectory(
+    final _ResolvedStorageRoot root = await _resolveStorageRoot(
       verifyWritable: true,
     );
     final String resolvedComicUri =
@@ -173,22 +179,20 @@ class ComicDownloadService {
     final String resolvedChapterLabel = (chapterLabel ?? '').trim().isEmpty
         ? _chapterFolderName(page)
         : chapterLabel!.trim();
-    final Directory chapterDirectory = Directory(
-      _joinPath(<String>[
-        rootDirectory.path,
-        _sanitizePathSegment(page.comicTitle),
-        _sanitizePathSegment(resolvedChapterLabel),
-      ]),
-    );
-    await chapterDirectory.create(recursive: true);
-    final File manifestFile = File(
-      _joinPath(<String>[chapterDirectory.path, 'manifest.json']),
-    );
+    final String chapterDirectoryPath = _joinRelativePath(<String>[
+      _sanitizePathSegment(page.comicTitle),
+      _sanitizePathSegment(resolvedChapterLabel),
+    ]);
+    final String manifestRelativePath = _joinRelativePath(<String>[
+      chapterDirectoryPath,
+      'manifest.json',
+    ]);
 
     final ChapterDownloadResult? completedResult =
         await _loadCompletedChapterFromManifest(
-          manifestFile: manifestFile,
-          chapterDirectory: chapterDirectory,
+          root: root,
+          manifestRelativePath: manifestRelativePath,
+          chapterDirectoryPath: chapterDirectoryPath,
           expectedImageCount: page.imageUrls.length,
         );
     if (completedResult != null) {
@@ -205,7 +209,8 @@ class ComicDownloadService {
     }
 
     final Map<int, String> existingFiles = await _loadExistingImageFiles(
-      chapterDirectory,
+      root,
+      chapterDirectoryPath,
     );
     final List<String> savedFiles = List<String>.filled(
       page.imageUrls.length,
@@ -256,18 +261,10 @@ class ComicDownloadService {
       );
       final String fileName =
           '${(index + 1).toString().padLeft(3, '0')}.$extension';
-      final File imageFile = File(
-        _joinPath(<String>[chapterDirectory.path, fileName]),
+      await root.writeBytes(
+        _joinRelativePath(<String>[chapterDirectoryPath, fileName]),
+        response.bodyBytes,
       );
-      final File tempFile = File('${imageFile.path}.part');
-      if (await tempFile.exists()) {
-        await tempFile.delete();
-      }
-      await tempFile.writeAsBytes(response.bodyBytes, flush: true);
-      if (await imageFile.exists()) {
-        await imageFile.delete();
-      }
-      await tempFile.rename(imageFile.path);
       savedFiles[index] = fileName;
 
       if (onProgress != null) {
@@ -284,7 +281,8 @@ class ComicDownloadService {
     final List<String> orderedSavedFiles = savedFiles
         .where((String fileName) => fileName.isNotEmpty)
         .toList(growable: false);
-    await manifestFile.writeAsString(
+    await root.writeString(
+      manifestRelativePath,
       const JsonEncoder.withIndent('  ').convert(<String, Object?>{
         'comicTitle': page.comicTitle,
         'comicUri': resolvedComicUri,
@@ -301,36 +299,33 @@ class ComicDownloadService {
         'imageCount': orderedSavedFiles.length,
         'files': orderedSavedFiles,
       }),
-      flush: true,
     );
 
     return ChapterDownloadResult(
-      directory: chapterDirectory,
+      directory: Directory(chapterDirectoryPath),
       fileCount: orderedSavedFiles.length,
-      manifestFile: manifestFile,
+      manifestFile: File(manifestRelativePath),
     );
   }
 
   Future<List<CachedComicLibraryEntry>> loadCachedLibrary() async {
     try {
-      final Directory rootDirectory = await _downloadsRootDirectory(
+      final _ResolvedStorageRoot root = await _resolveStorageRoot(
         verifyWritable: false,
       );
-      if (!await rootDirectory.exists()) {
-        return const <CachedComicLibraryEntry>[];
-      }
-
       final List<Map<String, Object?>> manifests = <Map<String, Object?>>[];
-      await for (final FileSystemEntity entity in rootDirectory.list(
+      final List<_StorageEntry> entries = await root.listEntries(
+        '',
         recursive: true,
-        followLinks: false,
-      )) {
-        if (entity is! File ||
-            !entity.path.endsWith('${Platform.pathSeparator}manifest.json')) {
+      );
+      for (final _StorageEntry entry in entries) {
+        if (entry.isDirectory || entry.name != 'manifest.json') {
           continue;
         }
         try {
-          final Object? decoded = jsonDecode(await entity.readAsString());
+          final Object? decoded = jsonDecode(
+            await root.readString(entry.relativePath),
+          );
           if (decoded is! Map) {
             continue;
           }
@@ -338,7 +333,7 @@ class ComicDownloadService {
             ...decoded.map(
               (Object? key, Object? value) => MapEntry(key.toString(), value),
             ),
-            '__directoryPath': entity.parent.path,
+            '__directoryPath': _parentRelativePath(entry.relativePath),
           });
         } catch (_) {
           continue;
@@ -469,29 +464,39 @@ class ComicDownloadService {
       return null;
     }
 
-    final File manifestFile = File(
-      _joinPath(<String>[entry.directoryPath, 'manifest.json']),
+    final _ResolvedStorageRoot root = await _resolveStorageRoot(
+      verifyWritable: false,
     );
-    if (!await manifestFile.exists()) {
+    final String manifestRelativePath = _joinRelativePath(<String>[
+      entry.directoryPath,
+      'manifest.json',
+    ]);
+    if (!await root.exists(manifestRelativePath)) {
       return null;
     }
 
     try {
-      final Object? decoded = jsonDecode(await manifestFile.readAsString());
+      final Object? decoded = jsonDecode(
+        await root.readString(manifestRelativePath),
+      );
       if (decoded is! Map) {
         return null;
       }
       final Map<String, Object?> manifest = decoded.map(
         (Object? key, Object? value) => MapEntry(key.toString(), value),
       );
+      final Map<String, _StorageEntry> chapterFiles = <String, _StorageEntry>{
+        for (final _StorageEntry file in await root.listEntries(
+          entry.directoryPath,
+          recursive: false,
+        ))
+          if (!file.isDirectory) file.name: file,
+      };
       final List<String> imageUrls =
           ((manifest['files'] as List<Object?>?) ?? const <Object?>[])
               .whereType<String>()
-              .map(
-                (String fileName) => Uri.file(
-                  _joinPath(<String>[entry.directoryPath, fileName]),
-                ).toString(),
-              )
+              .map((String fileName) => chapterFiles[fileName]?.uri ?? '')
+              .where((String uri) => uri.isNotEmpty)
               .toList(growable: false);
       if (imageUrls.isEmpty) {
         return null;
@@ -552,12 +557,21 @@ class ComicDownloadService {
       return;
     }
 
-    final Directory comicDirectory = Directory(chapterDirectoryPath).parent;
-    if (await comicDirectory.exists()) {
-      await comicDirectory.delete(recursive: true);
+    final String comicRelativePath = _parentRelativePath(chapterDirectoryPath);
+    if (comicRelativePath.isEmpty) {
+      await deleteComicCacheByTitle(entry.comicTitle);
       return;
     }
-    await deleteComicCacheByTitle(entry.comicTitle);
+    try {
+      final _ResolvedStorageRoot root = await _resolveStorageRoot(
+        verifyWritable: false,
+      );
+      if (!await root.deletePath(comicRelativePath)) {
+        await deleteComicCacheByTitle(entry.comicTitle);
+      }
+    } catch (_) {
+      await deleteComicCacheByTitle(entry.comicTitle);
+    }
   }
 
   Future<CachedChapterEntry?> _findCachedChapter(String chapterHref) async {
@@ -580,18 +594,10 @@ class ComicDownloadService {
 
   Future<void> deleteComicCacheByTitle(String comicTitle) async {
     try {
-      final Directory rootDirectory = await _downloadsRootDirectory(
+      final _ResolvedStorageRoot root = await _resolveStorageRoot(
         verifyWritable: false,
       );
-      final Directory comicDirectory = Directory(
-        _joinPath(<String>[
-          rootDirectory.path,
-          _sanitizePathSegment(comicTitle),
-        ]),
-      );
-      if (await comicDirectory.exists()) {
-        await comicDirectory.delete(recursive: true);
-      }
+      await root.deletePath(_sanitizePathSegment(comicTitle));
     } catch (_) {
       return;
     }
@@ -601,31 +607,33 @@ class ComicDownloadService {
     required String comicTitle,
     required String chapterLabel,
   }) async {
-    final Directory rootDirectory = await _downloadsRootDirectory(
+    final _ResolvedStorageRoot root = await _resolveStorageRoot(
       verifyWritable: false,
     );
-    final Directory chapterDirectory = Directory(
-      _joinPath(<String>[
-        rootDirectory.path,
-        _sanitizePathSegment(comicTitle),
-        _sanitizePathSegment(chapterLabel),
-      ]),
-    );
-    if (!await chapterDirectory.exists()) {
+    final String chapterDirectoryPath = _joinRelativePath(<String>[
+      _sanitizePathSegment(comicTitle),
+      _sanitizePathSegment(chapterLabel),
+    ]);
+    if (!await root.exists(chapterDirectoryPath)) {
       return;
     }
-    final File manifestFile = File(
-      _joinPath(<String>[chapterDirectory.path, 'manifest.json']),
-    );
-    if (!await manifestFile.exists()) {
-      await chapterDirectory.delete(recursive: true);
+    final String manifestRelativePath = _joinRelativePath(<String>[
+      chapterDirectoryPath,
+      'manifest.json',
+    ]);
+    if (!await root.exists(manifestRelativePath)) {
+      await root.deletePath(chapterDirectoryPath);
       return;
     }
-    await for (final FileSystemEntity entity in chapterDirectory.list()) {
-      if (entity is! File || !entity.path.endsWith('.part')) {
+    final List<_StorageEntry> entries = await root.listEntries(
+      chapterDirectoryPath,
+      recursive: false,
+    );
+    for (final _StorageEntry entry in entries) {
+      if (entry.isDirectory || !entry.name.endsWith('.part')) {
         continue;
       }
-      await entity.delete();
+      await root.deletePath(entry.relativePath);
     }
   }
 
@@ -660,22 +668,38 @@ class ComicDownloadService {
         toState.errorMessage.isEmpty ? '目标缓存目录不可用。' : toState.errorMessage,
       );
     }
-    if (fromState.rootPath.trim().isEmpty ||
-        _normalizedPath(fromState.rootPath) ==
-            _normalizedPath(toState.rootPath)) {
+    if (_sameStorageLocation(fromState, toState)) {
       return DownloadStorageMigrationResult(storageState: toState);
     }
-    final Directory sourceDirectory = Directory(fromState.rootPath);
-    if (!await sourceDirectory.exists()) {
+    final _ResolvedStorageRoot sourceRoot = await _resolveStorageRoot(
+      preferences: from,
+      verifyWritable: false,
+    );
+    final _ResolvedStorageRoot targetRoot = await _resolveStorageRoot(
+      preferences: to,
+      verifyWritable: true,
+    );
+    final List<_StorageEntry> sourceEntries = await sourceRoot.listEntries(
+      '',
+      recursive: true,
+    );
+    if (sourceEntries.isEmpty) {
       return DownloadStorageMigrationResult(storageState: toState);
     }
 
-    final Directory targetDirectory = Directory(toState.rootPath);
-    await _copyDirectory(sourceDirectory, targetDirectory);
+    for (final _StorageEntry entry in sourceEntries) {
+      if (entry.isDirectory || _shouldSkipMigrationFile(entry.name)) {
+        continue;
+      }
+      await targetRoot.writeBytes(
+        entry.relativePath,
+        await sourceRoot.readBytes(entry.relativePath),
+      );
+    }
 
     String cleanupWarning = '';
     try {
-      await sourceDirectory.delete(recursive: true);
+      await _clearStorageRoot(sourceRoot);
     } catch (_) {
       cleanupWarning = '旧缓存目录未能自动清理，可稍后手动删除。';
     }
@@ -683,26 +707,6 @@ class ComicDownloadService {
       storageState: toState,
       cleanupWarning: cleanupWarning,
     );
-  }
-
-  Future<Directory> _downloadsRootDirectory({
-    required bool verifyWritable,
-  }) async {
-    final DownloadStorageState storageState = await resolveStorageState(
-      verifyWritable: verifyWritable,
-    );
-    if (!storageState.isReady && verifyWritable) {
-      throw FileSystemException(
-        storageState.errorMessage.isEmpty
-            ? '缓存目录不可用。'
-            : storageState.errorMessage,
-      );
-    }
-    final String rootPath = storageState.rootPath.trim();
-    if (rootPath.isEmpty) {
-      throw const FileSystemException('缓存目录不可用。');
-    }
-    return Directory(rootPath);
   }
 
   String _chapterFolderName(ReaderPageData page) {
@@ -762,8 +766,20 @@ class ComicDownloadService {
     return normalized.length <= 80 ? normalized : normalized.substring(0, 80);
   }
 
-  String _joinPath(List<String> segments) {
-    return segments.join(Platform.pathSeparator);
+  String _joinRelativePath(List<String> segments) {
+    return segments
+        .map((String segment) => segment.trim())
+        .where((String segment) => segment.isNotEmpty)
+        .join('/');
+  }
+
+  String _parentRelativePath(String value) {
+    final String normalized = value.trim().replaceAll('\\', '/');
+    final int separatorIndex = normalized.lastIndexOf('/');
+    if (separatorIndex <= 0) {
+      return '';
+    }
+    return normalized.substring(0, separatorIndex);
   }
 
   String _stringValue(Object? value) {
@@ -818,16 +834,67 @@ class ComicDownloadService {
     return Uri(path: uri.path).toString();
   }
 
+  Future<_ResolvedStorageRoot> _resolveStorageRoot({
+    DownloadPreferences? preferences,
+    required bool verifyWritable,
+  }) async {
+    final DownloadStorageState storageState = await resolveStorageState(
+      preferences: preferences,
+      verifyWritable: verifyWritable,
+    );
+    if (!storageState.isReady && verifyWritable) {
+      throw FileSystemException(
+        storageState.errorMessage.isEmpty
+            ? '缓存目录不可用。'
+            : storageState.errorMessage,
+      );
+    }
+    if (storageState.preferences.usesDocumentTree) {
+      final String treeUri = storageState.preferences.customTreeUri.trim();
+      if (treeUri.isEmpty) {
+        throw const FileSystemException('缓存目录不可用。');
+      }
+      return _DocumentTreeStorageRoot(
+        bridge: _documentTreeBridge,
+        treeUri: treeUri,
+        rootRelativePath: storageState.preferences.usePickedDirectoryAsRoot
+            ? ''
+            : DownloadStorageService.downloadsDirectoryName,
+      );
+    }
+    final String rootPath = storageState.rootPath.trim();
+    if (rootPath.isEmpty) {
+      throw const FileSystemException('缓存目录不可用。');
+    }
+    return _FileStorageRoot(Directory(rootPath));
+  }
+
+  bool _sameStorageLocation(
+    DownloadStorageState left,
+    DownloadStorageState right,
+  ) {
+    if (left.preferences.usesDocumentTree ||
+        right.preferences.usesDocumentTree) {
+      return left.preferences.usesDocumentTree &&
+          right.preferences.usesDocumentTree &&
+          left.documentTreeUri.trim() == right.documentTreeUri.trim();
+    }
+    return _normalizedPath(left.rootPath) == _normalizedPath(right.rootPath);
+  }
+
   Future<ChapterDownloadResult?> _loadCompletedChapterFromManifest({
-    required File manifestFile,
-    required Directory chapterDirectory,
+    required _ResolvedStorageRoot root,
+    required String manifestRelativePath,
+    required String chapterDirectoryPath,
     required int expectedImageCount,
   }) async {
-    if (!await manifestFile.exists()) {
+    if (!await root.exists(manifestRelativePath)) {
       return null;
     }
     try {
-      final Object? decoded = jsonDecode(await manifestFile.readAsString());
+      final Object? decoded = jsonDecode(
+        await root.readString(manifestRelativePath),
+      );
       if (decoded is! Map) {
         return null;
       }
@@ -836,9 +903,9 @@ class ComicDownloadService {
         return null;
       }
       return ChapterDownloadResult(
-        directory: chapterDirectory,
+        directory: Directory(chapterDirectoryPath),
         fileCount: imageCount,
-        manifestFile: manifestFile,
+        manifestFile: File(manifestRelativePath),
       );
     } catch (_) {
       return null;
@@ -846,26 +913,28 @@ class ComicDownloadService {
   }
 
   Future<Map<int, String>> _loadExistingImageFiles(
-    Directory chapterDirectory,
+    _ResolvedStorageRoot root,
+    String chapterDirectoryPath,
   ) async {
-    if (!await chapterDirectory.exists()) {
+    if (!await root.exists(chapterDirectoryPath)) {
       return const <int, String>{};
     }
 
     final Map<int, String> existingFiles = <int, String>{};
     final RegExp pattern = RegExp(r'^(\d{3})\.[^.]+$');
-    await for (final FileSystemEntity entity in chapterDirectory.list()) {
-      if (entity is! File) {
+    for (final _StorageEntry entry in await root.listEntries(
+      chapterDirectoryPath,
+      recursive: false,
+    )) {
+      if (entry.isDirectory) {
         continue;
       }
-      final String fileName = entity.uri.pathSegments.isEmpty
-          ? ''
-          : entity.uri.pathSegments.last;
+      final String fileName = entry.name;
       final RegExpMatch? match = pattern.firstMatch(fileName);
       if (match == null) {
         continue;
       }
-      if (await entity.length() <= 0) {
+      if (entry.size <= 0) {
         continue;
       }
       final int index = int.parse(match.group(1)!) - 1;
@@ -886,57 +955,14 @@ class ComicDownloadService {
     }
   }
 
-  Future<void> _copyDirectory(Directory source, Directory target) async {
-    await target.create(recursive: true);
-    await for (final FileSystemEntity entity in source.list(
+  Future<void> _clearStorageRoot(_ResolvedStorageRoot root) async {
+    final List<_StorageEntry> topLevelEntries = await root.listEntries(
+      '',
       recursive: false,
-      followLinks: false,
-    )) {
-      final String relativePath = entity.path
-          .substring(source.path.length)
-          .replaceFirst(RegExp(r'^[\\/]+'), '');
-      if (relativePath.isEmpty) {
-        continue;
-      }
-      final String destinationPath = _joinPath(<String>[
-        target.path,
-        relativePath,
-      ]);
-      if (entity is Directory) {
-        await _copyDirectory(entity, Directory(destinationPath));
-        continue;
-      }
-      if (entity is File) {
-        final String fileName = entity.uri.pathSegments.isEmpty
-            ? ''
-            : entity.uri.pathSegments.last;
-        if (_shouldSkipMigrationFile(fileName)) {
-          continue;
-        }
-        await _copyFileSafely(entity, File(destinationPath));
-      }
+    );
+    for (final _StorageEntry entry in topLevelEntries) {
+      await root.deletePath(entry.relativePath);
     }
-  }
-
-  Future<void> _copyFileSafely(File source, File destination) async {
-    await destination.parent.create(recursive: true);
-    if (await destination.exists()) {
-      final int sourceLength = await source.length();
-      final int destinationLength = await destination.length();
-      if (sourceLength == destinationLength && destinationLength > 0) {
-        return;
-      }
-    }
-
-    final File tempFile = File('${destination.path}.migrate_tmp');
-    if (await tempFile.exists()) {
-      await tempFile.delete();
-    }
-    await source.copy(tempFile.path);
-    if (await destination.exists()) {
-      await destination.delete();
-    }
-    await tempFile.rename(destination.path);
   }
 
   bool _shouldSkipMigrationFile(String fileName) {
@@ -955,5 +981,284 @@ class ComicDownloadService {
       Platform.pathSeparator,
     );
     return Platform.isWindows ? normalized.toLowerCase() : normalized;
+  }
+}
+
+class _StorageEntry {
+  const _StorageEntry({
+    required this.relativePath,
+    required this.name,
+    required this.uri,
+    required this.isDirectory,
+    required this.size,
+  });
+
+  final String relativePath;
+  final String name;
+  final String uri;
+  final bool isDirectory;
+  final int size;
+}
+
+abstract class _ResolvedStorageRoot {
+  Future<void> writeBytes(String relativePath, Uint8List bytes);
+
+  Future<void> writeString(String relativePath, String text);
+
+  Future<String> readString(String relativePath);
+
+  Future<Uint8List> readBytes(String relativePath);
+
+  Future<List<_StorageEntry>> listEntries(
+    String relativePath, {
+    required bool recursive,
+  });
+
+  Future<bool> exists(String relativePath);
+
+  Future<bool> deletePath(String relativePath);
+}
+
+class _FileStorageRoot implements _ResolvedStorageRoot {
+  const _FileStorageRoot(this.rootDirectory);
+
+  final Directory rootDirectory;
+
+  @override
+  Future<void> writeBytes(String relativePath, Uint8List bytes) async {
+    final File file = File(_absolutePath(relativePath));
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(bytes, flush: true);
+  }
+
+  @override
+  Future<void> writeString(String relativePath, String text) async {
+    final File file = File(_absolutePath(relativePath));
+    await file.parent.create(recursive: true);
+    await file.writeAsString(text, flush: true);
+  }
+
+  @override
+  Future<String> readString(String relativePath) {
+    return File(_absolutePath(relativePath)).readAsString();
+  }
+
+  @override
+  Future<Uint8List> readBytes(String relativePath) {
+    return File(_absolutePath(relativePath)).readAsBytes();
+  }
+
+  @override
+  Future<List<_StorageEntry>> listEntries(
+    String relativePath, {
+    required bool recursive,
+  }) async {
+    final String normalizedRelativePath = _normalizeRelativePath(relativePath);
+    final String absolutePath = normalizedRelativePath.isEmpty
+        ? rootDirectory.path
+        : _absolutePath(normalizedRelativePath);
+    final FileSystemEntityType type = await FileSystemEntity.type(absolutePath);
+    if (type == FileSystemEntityType.notFound) {
+      return const <_StorageEntry>[];
+    }
+    if (type == FileSystemEntityType.file) {
+      final File file = File(absolutePath);
+      return <_StorageEntry>[
+        _StorageEntry(
+          relativePath: normalizedRelativePath,
+          name: file.uri.pathSegments.last,
+          uri: file.uri.toString(),
+          isDirectory: false,
+          size: await file.length(),
+        ),
+      ];
+    }
+
+    final Directory directory = Directory(absolutePath);
+    final List<_StorageEntry> entries = <_StorageEntry>[];
+    await for (final FileSystemEntity entity in directory.list(
+      recursive: recursive,
+      followLinks: false,
+    )) {
+      final String relative = entity.path
+          .substring(rootDirectory.path.length)
+          .replaceFirst(RegExp(r'^[\\/]+'), '')
+          .replaceAll('\\', '/');
+      if (relative.isEmpty) {
+        continue;
+      }
+      final FileSystemEntityType entityType = await FileSystemEntity.type(
+        entity.path,
+        followLinks: false,
+      );
+      final bool isDirectory = entityType == FileSystemEntityType.directory;
+      final int size = entity is File ? await entity.length() : 0;
+      entries.add(
+        _StorageEntry(
+          relativePath: relative,
+          name: entity.uri.pathSegments.isEmpty
+              ? ''
+              : entity.uri.pathSegments.last,
+          uri: entity.uri.toString(),
+          isDirectory: isDirectory,
+          size: size,
+        ),
+      );
+    }
+    return entries;
+  }
+
+  @override
+  Future<bool> exists(String relativePath) async {
+    return await FileSystemEntity.type(
+          _absolutePath(relativePath),
+          followLinks: false,
+        ) !=
+        FileSystemEntityType.notFound;
+  }
+
+  @override
+  Future<bool> deletePath(String relativePath) async {
+    final String absolutePath = _absolutePath(relativePath);
+    final FileSystemEntityType type = await FileSystemEntity.type(
+      absolutePath,
+      followLinks: false,
+    );
+    if (type == FileSystemEntityType.notFound) {
+      return false;
+    }
+    if (type == FileSystemEntityType.directory) {
+      await Directory(absolutePath).delete(recursive: true);
+      return true;
+    }
+    await File(absolutePath).delete();
+    return true;
+  }
+
+  String _absolutePath(String relativePath) {
+    final String normalized = _normalizeRelativePath(
+      relativePath,
+    ).replaceAll('/', Platform.pathSeparator);
+    return normalized.isEmpty
+        ? rootDirectory.path
+        : '${rootDirectory.path}${Platform.pathSeparator}$normalized';
+  }
+
+  String _normalizeRelativePath(String relativePath) {
+    return relativePath.trim().replaceAll('\\', '/');
+  }
+}
+
+class _DocumentTreeStorageRoot implements _ResolvedStorageRoot {
+  const _DocumentTreeStorageRoot({
+    required this.bridge,
+    required this.treeUri,
+    this.rootRelativePath = '',
+  });
+
+  final AndroidDocumentTreeBridge bridge;
+  final String treeUri;
+  final String rootRelativePath;
+
+  @override
+  Future<void> writeBytes(String relativePath, Uint8List bytes) {
+    return bridge.writeBytes(
+      treeUri: treeUri,
+      relativePath: _resolveRelativePath(relativePath),
+      bytes: bytes,
+    );
+  }
+
+  @override
+  Future<void> writeString(String relativePath, String text) {
+    return bridge.writeText(
+      treeUri: treeUri,
+      relativePath: _resolveRelativePath(relativePath),
+      text: text,
+    );
+  }
+
+  @override
+  Future<String> readString(String relativePath) {
+    return bridge.readText(
+      treeUri: treeUri,
+      relativePath: _resolveRelativePath(relativePath),
+    );
+  }
+
+  @override
+  Future<Uint8List> readBytes(String relativePath) {
+    return bridge.readBytes(
+      treeUri: treeUri,
+      relativePath: _resolveRelativePath(relativePath),
+    );
+  }
+
+  @override
+  Future<List<_StorageEntry>> listEntries(
+    String relativePath, {
+    required bool recursive,
+  }) async {
+    final String requestedPath = _resolveRelativePath(relativePath);
+    final String prefix = _normalizeRelativePath(rootRelativePath);
+    final List<DocumentTreeEntry> entries = await bridge.listEntries(
+      treeUri: treeUri,
+      relativePath: requestedPath,
+      recursive: recursive,
+    );
+    return entries
+        .map((DocumentTreeEntry entry) => _toStorageEntry(entry, prefix))
+        .where((_StorageEntry entry) => entry.relativePath.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  _StorageEntry _toStorageEntry(DocumentTreeEntry entry, String prefix) {
+    String relative = _normalizeRelativePath(entry.relativePath);
+    if (prefix.isNotEmpty) {
+      if (relative == prefix) {
+        relative = '';
+      } else if (relative.startsWith('$prefix/')) {
+        relative = relative.substring(prefix.length + 1);
+      }
+    }
+    return _StorageEntry(
+      relativePath: relative,
+      name: entry.name,
+      uri: entry.uri,
+      isDirectory: entry.isDirectory,
+      size: entry.size,
+    );
+  }
+
+  @override
+  Future<bool> exists(String relativePath) {
+    return bridge.exists(
+      treeUri: treeUri,
+      relativePath: _resolveRelativePath(relativePath),
+    );
+  }
+
+  @override
+  Future<bool> deletePath(String relativePath) {
+    return bridge.deletePath(
+      treeUri: treeUri,
+      relativePath: _resolveRelativePath(relativePath),
+    );
+  }
+
+  String _resolveRelativePath(String relativePath) {
+    final String normalized = _normalizeRelativePath(relativePath);
+    final String normalizedRoot = _normalizeRelativePath(rootRelativePath);
+    if (normalizedRoot.isEmpty) {
+      return normalized;
+    }
+    if (normalized.isEmpty) {
+      return normalizedRoot;
+    }
+    return '$normalizedRoot/$normalized';
+  }
+
+  String _normalizeRelativePath(String relativePath) {
+    return relativePath.trim().replaceAll('\\', '/');
   }
 }

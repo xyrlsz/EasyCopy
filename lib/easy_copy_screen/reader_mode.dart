@@ -629,40 +629,17 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
         : BoxFit.contain;
     final Uri? parsedUri = Uri.tryParse(imageUrl);
     final bool isLocalFile = parsedUri != null && parsedUri.scheme == 'file';
-    final Widget image = isLocalFile
-        ? Image.file(
-            File.fromUri(parsedUri),
-            fit: fit,
-            width: double.infinity,
-            height: viewportHeight,
-            errorBuilder:
-                (BuildContext context, Object error, StackTrace? stackTrace) {
-                  return SizedBox(
-                    height: viewportHeight ?? 220,
-                    child: const Center(
-                      child: Icon(Icons.broken_image_outlined, size: 36),
-                    ),
-                  );
-                },
-          )
-        : CachedNetworkImage(
-            imageUrl: imageUrl,
-            fit: fit,
-            width: double.infinity,
-            height: viewportHeight,
-            cacheManager: EasyCopyImageCaches.readerCache,
-            progressIndicatorBuilder:
-                (BuildContext context, String url, DownloadProgress progress) {
-                  return SizedBox(
-                    height: viewportHeight ?? 260,
-                    child: Center(
-                      child: CircularProgressIndicator(
-                        value: progress.progress,
-                      ),
-                    ),
-                  );
-                },
-            errorWidget: (BuildContext context, String url, Object error) {
+    final bool isDocumentTreeFile =
+        parsedUri != null && parsedUri.scheme == 'content';
+    final Widget image;
+    if (isLocalFile) {
+      image = Image.file(
+        File.fromUri(parsedUri),
+        fit: fit,
+        width: double.infinity,
+        height: viewportHeight,
+        errorBuilder:
+            (BuildContext context, Object error, StackTrace? stackTrace) {
               return SizedBox(
                 height: viewportHeight ?? 220,
                 child: const Center(
@@ -670,7 +647,49 @@ extension _EasyCopyScreenReaderMode on _EasyCopyScreenState {
                 ),
               );
             },
+      );
+    } else if (isDocumentTreeFile) {
+      image = Image(
+        image: DocumentTreeImageProvider(imageUrl),
+        fit: fit,
+        width: double.infinity,
+        height: viewportHeight,
+        errorBuilder:
+            (BuildContext context, Object error, StackTrace? stackTrace) {
+              return SizedBox(
+                height: viewportHeight ?? 220,
+                child: const Center(
+                  child: Icon(Icons.broken_image_outlined, size: 36),
+                ),
+              );
+            },
+      );
+    } else {
+      image = CachedNetworkImage(
+        imageUrl: imageUrl,
+        fit: fit,
+        width: double.infinity,
+        height: viewportHeight,
+        cacheManager: EasyCopyImageCaches.readerCache,
+        progressIndicatorBuilder:
+            (BuildContext context, String url, DownloadProgress progress) {
+              return SizedBox(
+                height: viewportHeight ?? 260,
+                child: Center(
+                  child: CircularProgressIndicator(value: progress.progress),
+                ),
+              );
+            },
+        errorWidget: (BuildContext context, String url, Object error) {
+          return SizedBox(
+            height: viewportHeight ?? 220,
+            child: const Center(
+              child: Icon(Icons.broken_image_outlined, size: 36),
+            ),
           );
+        },
+      );
+    }
 
     return ColoredBox(
       color: showGap ? colorScheme.surface : colorScheme.surfaceContainerLowest,
