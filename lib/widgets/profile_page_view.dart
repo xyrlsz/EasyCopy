@@ -131,38 +131,50 @@ class ProfilePageView extends StatelessWidget {
           ? _buildUserCard(context, page.user!)
           : _buildLoggedOutCard(),
     ];
-
-    if (showsHostSettings) {
+    void addSection(Widget widget) {
       sections.add(const SizedBox(height: 18));
-      sections.add(
-        _HostSettingsEntryCard(
-          currentHost: currentHost,
-          candidateHosts: candidateHosts,
-          snapshot: hostSnapshot,
-          isRefreshing: isRefreshingHosts,
-          onRefresh: onRefreshHosts,
-          onUseAutomaticSelection: onUseAutomaticHostSelection,
-          onSelectHost: onSelectHost,
+      sections.add(widget);
+    }
+
+    if (page.isLoggedIn && page.user != null && page.collections.isNotEmpty) {
+      addSection(
+        _SectionCard(
+          title: '我的收藏',
+          action: _SectionActionButton(
+            semanticLabel: '查看全部收藏',
+            onTap: onOpenCollections,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              _SectionCaption('共 $collectionsTotal 部漫画'),
+              const SizedBox(height: 14),
+              SizedBox(
+                height: 232,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: collectionCards.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 12),
+                  itemBuilder: (BuildContext context, int index) {
+                    final ComicCardData item = collectionCards[index];
+                    return SizedBox(
+                      width: 136,
+                      child: _LibraryCard(
+                        item: item,
+                        onTap: () => onOpenComic(item.href),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
 
-    sections.add(const SizedBox(height: 18));
-    sections.add(
-      _AppearanceSettingsCard(
-        themePreference: themePreference,
-        onChanged: onThemePreferenceChanged,
-      ),
-    );
-
-    if (afterContinueReading != null) {
-      sections.add(const SizedBox(height: 18));
-      sections.add(afterContinueReading!);
-    }
-
     if (cachedComicCards.isNotEmpty) {
-      sections.add(const SizedBox(height: 18));
-      sections.add(
+      addSection(
         _SectionCard(
           title: '已缓存漫画',
           action: _SectionActionButton(
@@ -202,13 +214,8 @@ class ProfilePageView extends StatelessWidget {
       );
     }
 
-    if (!page.isLoggedIn || page.user == null) {
-      return Column(children: sections);
-    }
-
-    if (page.continueReading != null) {
-      sections.add(const SizedBox(height: 18));
-      sections.add(
+    if (page.isLoggedIn && page.user != null && page.continueReading != null) {
+      addSection(
         _SectionCard(
           title: '继续阅读',
           child: _HistoryTile(
@@ -218,46 +225,8 @@ class ProfilePageView extends StatelessWidget {
         ),
       );
     }
-    if (page.collections.isNotEmpty) {
-      sections.add(const SizedBox(height: 18));
-      sections.add(
-        _SectionCard(
-          title: '我的收藏',
-          action: _SectionActionButton(
-            semanticLabel: '查看全部收藏',
-            onTap: onOpenCollections,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              _SectionCaption('共 $collectionsTotal 部漫画'),
-              const SizedBox(height: 14),
-              SizedBox(
-                height: 232,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: collectionCards.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 12),
-                  itemBuilder: (BuildContext context, int index) {
-                    final ComicCardData item = collectionCards[index];
-                    return SizedBox(
-                      width: 136,
-                      child: _LibraryCard(
-                        item: item,
-                        onTap: () => onOpenComic(item.href),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-    if (page.history.isNotEmpty) {
-      sections.add(const SizedBox(height: 18));
-      sections.add(
+    if (page.isLoggedIn && page.user != null && page.history.isNotEmpty) {
+      addSection(
         _SectionCard(
           title: '浏览历史',
           action: _SectionActionButton(
@@ -292,6 +261,32 @@ class ProfilePageView extends StatelessWidget {
         ),
       );
     }
+
+    if (afterContinueReading != null) {
+      addSection(afterContinueReading!);
+    }
+
+    addSection(
+      _AppearanceSettingsCard(
+        themePreference: themePreference,
+        onChanged: onThemePreferenceChanged,
+      ),
+    );
+
+    if (showsHostSettings) {
+      addSection(
+        _HostSettingsEntryCard(
+          currentHost: currentHost,
+          candidateHosts: candidateHosts,
+          snapshot: hostSnapshot,
+          isRefreshing: isRefreshingHosts,
+          onRefresh: onRefreshHosts,
+          onUseAutomaticSelection: onUseAutomaticHostSelection,
+          onSelectHost: onSelectHost,
+        ),
+      );
+    }
+
     return Column(children: sections);
   }
 
