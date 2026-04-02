@@ -12,6 +12,7 @@ import 'package:easy_copy/services/android_document_tree_bridge.dart';
 import 'package:easy_copy/services/app_preferences_controller.dart';
 import 'package:easy_copy/services/comic_download_service.dart';
 import 'package:easy_copy/services/deferred_viewport_coordinator.dart';
+import 'package:easy_copy/services/debug_trace.dart';
 import 'package:easy_copy/services/download_queue_manager.dart';
 import 'package:easy_copy/services/discover_filter_selection.dart';
 import 'package:easy_copy/services/display_mode_service.dart';
@@ -39,6 +40,7 @@ import 'package:easy_copy/widgets/download_management_page.dart';
 import 'package:easy_copy/widgets/native_login_screen.dart';
 import 'package:easy_copy/widgets/profile_page_view.dart';
 import 'package:easy_copy/widgets/settings_ui.dart';
+import 'package:easy_copy/widgets/top_notice.dart';
 import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
@@ -150,6 +152,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   bool _isDiscoverThemeExpanded = false;
   List<CachedComicLibraryEntry> _cachedComics =
       const <CachedComicLibraryEntry>[];
+  Future<void>? _cachedLibraryRefreshTask;
+  CacheLibraryRefreshReason? _queuedCachedLibraryRefreshReason;
+  bool _queuedCachedLibraryForceRescan = false;
   int _downloadActiveLoadId = 0;
   Completer<ReaderPageData>? _downloadExtractionCompleter;
   Timer? _readerProgressDebounce;
@@ -192,6 +197,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   StreamSubscription<ReaderVolumeKeyAction>? _volumeKeySubscription;
   final StandardPageLoadController<EasyCopyPage> _standardPageLoadController =
       StandardPageLoadController<EasyCopyPage>();
+  final String _bootId = DateTime.now().microsecondsSinceEpoch.toString();
 
   ValueListenable<DownloadQueueSnapshot> get _downloadQueueSnapshotNotifier =>
       _downloadQueueManager.snapshotNotifier;
@@ -227,7 +233,9 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       downloadService: _downloadService,
       queueStore: _downloadQueueStore,
       taskRunner: _EasyCopyScreenDownloadTaskRunner(this),
-      onLibraryChanged: _refreshCachedComics,
+      onLibraryChanged: (CacheLibraryRefreshReason reason) {
+        return _refreshCachedComics(reason: reason);
+      },
       onNotice: _handleDownloadQueueNotice,
     );
     _preferencesController.addListener(_handlePreferencesChanged);
@@ -548,7 +556,13 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         .hasSameStorageLocation(nextDownloadPreferences);
     if (downloadPreferencesChanged) {
       unawaited(_refreshDownloadStorageState());
-      unawaited(_refreshCachedComics());
+      if (_downloadStorageMigrationProgressNotifier.value == null) {
+        unawaited(
+          _refreshCachedComics(
+            reason: CacheLibraryRefreshReason.preferencesChanged,
+          ),
+        );
+      }
     }
 
     final bool requiresReaderRestore =
@@ -565,13 +579,17 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }
 
   Future<void> _bootstrap() async {
+    final Stopwatch stopwatch = Stopwatch()..start();
     await Future.wait(<Future<void>>[
       _hostManager.ensureInitialized(),
       _session.ensureInitialized(),
       _preferencesController.ensureInitialized(),
       _readerProgressStore.ensureInitialized(),
     ]);
-    await _downloadQueueManager.recoverInterruptedStorageMigration();
+    DebugTrace.log('bootstrap.initialized', <String, Object?>{
+      'bootId': _bootId,
+      'elapsedMs': stopwatch.elapsedMilliseconds,
+    });
     await _refreshDownloadStorageState();
     await _restoreDownloadQueue();
     final Uri homeUri = appDestinations.first.uri;
@@ -583,10 +601,27 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     });
     _syncSearchController();
     await _loadUri(homeUri, historyMode: NavigationIntent.resetToRoot);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_refreshCachedComics());
+    DebugTrace.log('bootstrap.home_ready', <String, Object?>{
+      'bootId': _bootId,
+      'elapsedMs': stopwatch.elapsedMilliseconds,
     });
-    unawaited(_ensureDownloadQueueRunning());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_runDeferredBootstrapTasks());
+    });
+  }
+
+  Future<void> _runDeferredBootstrapTasks() async {
+    await _downloadQueueManager.recoverInterruptedStorageMigration();
+    if (!_downloadQueueManager.shouldBypassCachedReaderLookup) {
+      await _refreshCachedComics(reason: CacheLibraryRefreshReason.bootstrap);
+    } else {
+      DebugTrace.log('cached_library.refresh_deferred', <String, Object?>{
+        'bootId': _bootId,
+        'reason': CacheLibraryRefreshReason.bootstrap.name,
+        'deferReason': 'storage_migration_active',
+      });
+    }
+    await _ensureDownloadQueueRunning();
   }
 
   WebViewController _buildController() {
@@ -870,16 +905,87 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     }
   }
 
-  Future<void> _refreshCachedComics() async {
-    final List<CachedComicLibraryEntry> comics = await _downloadService
-        .loadCachedLibrary();
-    if (!mounted) {
-      _cachedComics = comics;
-      return;
+  Future<void> _refreshCachedComics({
+    CacheLibraryRefreshReason reason = CacheLibraryRefreshReason.manual,
+    bool forceRescan = false,
+  }) {
+    final Future<void>? activeTask = _cachedLibraryRefreshTask;
+    if (activeTask != null) {
+      _queuedCachedLibraryRefreshReason = reason;
+      _queuedCachedLibraryForceRescan =
+          _queuedCachedLibraryForceRescan || forceRescan;
+      return activeTask;
     }
-    setState(() {
-      _cachedComics = comics;
-    });
+    late final Future<void> task;
+    task = _runCachedLibraryRefreshLoop(reason, forceRescan: forceRescan)
+        .whenComplete(() {
+          if (identical(_cachedLibraryRefreshTask, task)) {
+            _cachedLibraryRefreshTask = null;
+          }
+        });
+    _cachedLibraryRefreshTask = task;
+    return task;
+  }
+
+  Future<void> _runCachedLibraryRefreshLoop(
+    CacheLibraryRefreshReason initialReason, {
+    required bool forceRescan,
+  }) async {
+    CacheLibraryRefreshReason currentReason = initialReason;
+    bool currentForceRescan = forceRescan;
+    while (true) {
+      _queuedCachedLibraryRefreshReason = null;
+      _queuedCachedLibraryForceRescan = false;
+      final Stopwatch stopwatch = Stopwatch()..start();
+      DebugTrace.log('cached_library.refresh_start', <String, Object?>{
+        'bootId': _bootId,
+        'reason': currentReason.name,
+        'forceRescan': currentForceRescan,
+      });
+      final List<CachedComicLibraryEntry> comics = await _downloadService
+          .loadCachedLibrary(forceRescan: currentForceRescan);
+      if (!mounted) {
+        _cachedComics = comics;
+      } else {
+        setState(() {
+          _cachedComics = comics;
+        });
+      }
+      DebugTrace.log('cached_library.refresh_complete', <String, Object?>{
+        'bootId': _bootId,
+        'reason': currentReason.name,
+        'forceRescan': currentForceRescan,
+        'comicCount': comics.length,
+        'elapsedMs': stopwatch.elapsedMilliseconds,
+      });
+      final CacheLibraryRefreshReason? queuedReason =
+          _queuedCachedLibraryRefreshReason;
+      final bool queuedForceRescan = _queuedCachedLibraryForceRescan;
+      if (queuedReason == null && !queuedForceRescan) {
+        break;
+      }
+      currentReason = queuedReason ?? currentReason;
+      currentForceRescan = queuedForceRescan;
+    }
+  }
+
+  Future<String> _rescanCurrentDownloadStorage() async {
+    await _refreshCachedComics(
+      reason: CacheLibraryRefreshReason.storageRescan,
+      forceRescan: true,
+    );
+    if (!mounted) {
+      return '';
+    }
+    final int comicCount = _cachedComics.length;
+    final int chapterCount = _cachedComics.fold(
+      0,
+      (int total, CachedComicLibraryEntry entry) =>
+          total + entry.cachedChapterCount,
+    );
+    return comicCount == 0
+        ? '当前目录未发现可恢复缓存'
+        : '已恢复 $comicCount 部漫画，$chapterCount 话缓存';
   }
 
   Future<void> _refreshDownloadStorageState({
@@ -1212,7 +1318,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       );
       await _applyDownloadStoragePreferences(
         nextPreferences,
-        successMessage: '已切换到新的存储位置',
+        successMessage: '已开始迁移到新的存储位置',
       );
     }
   }
@@ -1223,7 +1329,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     }
     await _applyDownloadStoragePreferences(
       const DownloadPreferences(),
-      successMessage: '已恢复默认缓存目录',
+      successMessage: '已开始迁移到默认缓存目录',
     );
   }
 
@@ -1237,10 +1343,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       if (result == null) {
         return;
       }
-      final String message = result.cleanupWarning.isEmpty
-          ? successMessage
-          : '$successMessage，${result.cleanupWarning}';
-      _showSnackBar(message);
+      _showSnackBar('$successMessage，完成后自动切换');
     } catch (error) {
       await _refreshDownloadStorageState();
       _showSnackBar(_formatDownloadError(error));
@@ -1603,19 +1706,51 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       preserveVisiblePage: preserveVisiblePage,
       sourceKind: NavigationRequestSourceKind.navigation,
     );
-    if (_isReaderChapterUri(targetUri)) {
-      final bool openedFromCache = await _tryOpenCachedChapterReader(
-        targetUri,
-        requestContext: requestContext.copyWith(
-          sourceKind: NavigationRequestSourceKind.cachedReader,
-        ),
-        context: cachedChapterContext,
-      );
-      if (openedFromCache || !_canCommitRequest(requestContext)) {
+    final bool isReaderChapterRoute = _isReaderChapterUri(targetUri);
+    final bool shouldPreferFreshReaderLoad =
+        isReaderChapterRoute &&
+        _downloadQueueManager.shouldBypassCachedReaderLookup;
+    final Stopwatch? readerLoadStopwatch = isReaderChapterRoute
+        ? (Stopwatch()..start())
+        : null;
+    if (isReaderChapterRoute) {
+      DebugTrace.log('reader.load_request', <String, Object?>{
+        'bootId': _bootId,
+        'uri': targetUri.toString(),
+        'bypassCache': bypassCache,
+        'historyMode': historyMode.name,
+      });
+    }
+    if (isReaderChapterRoute) {
+      if (shouldPreferFreshReaderLoad) {
+        DebugTrace.log('reader.cached_lookup_skipped', <String, Object?>{
+          'bootId': _bootId,
+          'uri': targetUri.toString(),
+          'reason': 'storage_migration_active',
+        });
+      } else {
+        final bool openedFromCache = await _tryOpenCachedChapterReader(
+          targetUri,
+          requestContext: requestContext.copyWith(
+            sourceKind: NavigationRequestSourceKind.cachedReader,
+          ),
+          context: cachedChapterContext,
+        );
+        if (openedFromCache) {
+          DebugTrace.log('reader.load_complete', <String, Object?>{
+            'bootId': _bootId,
+            'uri': targetUri.toString(),
+            'source': 'storage_cache',
+            'elapsedMs': readerLoadStopwatch?.elapsedMilliseconds,
+          });
+          return;
+        }
+      }
+      if (!_canCommitRequest(requestContext)) {
         return;
       }
     }
-    if (!bypassCache) {
+    if (!bypassCache && !shouldPreferFreshReaderLoad) {
       final CachedPageHit? cachedHit = await _pageRepository.readCached(key);
       if (!_canCommitRequest(requestContext)) {
         _recordDiscardedNavigationMutation(
@@ -1633,6 +1768,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
               requestContext.targetTabIndex,
             ),
           );
+          if (isReaderChapterRoute) {
+            DebugTrace.log('reader.load_complete', <String, Object?>{
+              'bootId': _bootId,
+              'uri': targetUri.toString(),
+              'source': 'page_cache',
+              'elapsedMs': readerLoadStopwatch?.elapsedMilliseconds,
+            });
+          }
           if (!cachedHit.envelope.isSoftExpired(DateTime.now())) {
             return;
           }
@@ -1650,6 +1793,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
           return;
         }
       }
+    } else if (shouldPreferFreshReaderLoad) {
+      DebugTrace.log('reader.page_cache_skipped', <String, Object?>{
+        'bootId': _bootId,
+        'uri': targetUri.toString(),
+        'reason': 'storage_migration_active',
+      });
     }
 
     if (!_canCommitRequest(requestContext)) {
@@ -1657,11 +1806,26 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       return;
     }
     try {
+      if (isReaderChapterRoute) {
+        DebugTrace.log('reader.fresh_load_start', <String, Object?>{
+          'bootId': _bootId,
+          'uri': targetUri.toString(),
+        });
+      }
       final EasyCopyPage freshPage = await _pageRepository.loadFresh(
         targetUri,
         authScope: key.authScope,
         requestContext: requestContext,
       );
+      if (isReaderChapterRoute) {
+        DebugTrace.log('reader.load_complete', <String, Object?>{
+          'bootId': _bootId,
+          'uri': targetUri.toString(),
+          'source': 'fresh',
+          'pageType': freshPage.type.name,
+          'elapsedMs': readerLoadStopwatch?.elapsedMilliseconds,
+        });
+      }
       _applyLoadedPage(
         freshPage,
         requestContext: requestContext,
@@ -1670,6 +1834,14 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         ),
       );
     } catch (error) {
+      if (isReaderChapterRoute) {
+        DebugTrace.log('reader.load_failed', <String, Object?>{
+          'bootId': _bootId,
+          'uri': targetUri.toString(),
+          'elapsedMs': readerLoadStopwatch?.elapsedMilliseconds,
+          'error': error.toString(),
+        });
+      }
       await _handlePageLoadFailure(error, requestContext: requestContext);
     }
   }
@@ -2399,9 +2571,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       if (mounted) {
         _showSnackBar('已切换到 $normalizedHost');
       }
-    } catch (_) {
+    } catch (error) {
       if (mounted) {
-        _showSnackBar('切换节点失败，请稍后重试');
+        final String message = error is StateError
+            ? error.message.toString()
+            : '切换节点失败，请稍后重试';
+        _showSnackBar(message);
       }
     } finally {
       if (mounted) {
@@ -2444,11 +2619,36 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }
 
   void _showSnackBar(String message) {
-    final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(
-      context,
-    );
-    messenger?.hideCurrentSnackBar();
-    messenger?.showSnackBar(SnackBar(content: Text(message)));
+    if (!mounted) {
+      return;
+    }
+    TopNotice.show(context, message, tone: _topNoticeToneFor(message));
+  }
+
+  TopNoticeTone _topNoticeToneFor(String message) {
+    final String normalized = message.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return TopNoticeTone.info;
+    }
+    if (normalized.contains('失败') ||
+        normalized.contains('异常') ||
+        normalized.contains('错误') ||
+        normalized.contains('失效') ||
+        normalized.contains('不可用')) {
+      return TopNoticeTone.error;
+    }
+    if (normalized.contains('警告') ||
+        normalized.contains('稍后') ||
+        normalized.contains('阻止')) {
+      return TopNoticeTone.warning;
+    }
+    if (normalized.contains('已') ||
+        normalized.contains('完成') ||
+        normalized.contains('恢复') ||
+        normalized.contains('继续')) {
+      return TopNoticeTone.success;
+    }
+    return TopNoticeTone.info;
   }
 
   void _syncSearchController() {
@@ -2630,7 +2830,15 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       });
       _showSnackBar(message);
     }
-    if (_isFailingOver || _consecutiveFrameFailures < 2) {
+    if (_isFailingOver) {
+      return;
+    }
+    if (await _tryAutoRecoverHostOnNetworkFailure(message)) {
+      _consecutiveFrameFailures = 0;
+      return;
+    }
+    if (_hostManager.sessionPinnedHost != null ||
+        _consecutiveFrameFailures < 2) {
       return;
     }
     _isFailingOver = true;
@@ -2657,6 +2865,83 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
     } finally {
       _isFailingOver = false;
     }
+  }
+
+  Future<bool> _tryAutoRecoverHostOnNetworkFailure(String message) async {
+    if (_hostManager.sessionPinnedHost != null ||
+        !_isLikelyRecoverableNetworkFailure(message)) {
+      return false;
+    }
+    _isFailingOver = true;
+    final String previousHost = _hostManager.currentHost;
+    try {
+      DebugTrace.log('host.auto_probe_start', <String, Object?>{
+        'bootId': _bootId,
+        'currentHost': previousHost,
+        'message': message,
+      });
+      await _hostManager.refreshProbes(force: true);
+      final String nextHost = _hostManager.currentHost;
+      DebugTrace.log('host.auto_probe_complete', <String, Object?>{
+        'bootId': _bootId,
+        'previousHost': previousHost,
+        'nextHost': nextHost,
+      });
+      if (nextHost == previousHost) {
+        return false;
+      }
+      await _syncSessionCookiesToCurrentHost();
+      if (!mounted) {
+        return true;
+      }
+      _showSnackBar('网络异常，已自动切换到 $nextHost');
+      await _loadUri(
+        AppConfig.rewriteToCurrentHost(_currentUri),
+        preserveVisiblePage: _page != null,
+        sourceTabIndex: _selectedIndex,
+        historyMode: NavigationIntent.preserve,
+      );
+      return true;
+    } catch (error) {
+      DebugTrace.log('host.auto_probe_failed', <String, Object?>{
+        'bootId': _bootId,
+        'currentHost': previousHost,
+        'message': message,
+        'error': error.toString(),
+      });
+      return false;
+    } finally {
+      _isFailingOver = false;
+    }
+  }
+
+  bool _isLikelyRecoverableNetworkFailure(String message) {
+    final String normalized = message.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    const List<String> networkErrorKeywords = <String>[
+      'err_connection_reset',
+      'err_connection_closed',
+      'err_connection_aborted',
+      'err_connection_refused',
+      'err_connection_timed_out',
+      'err_timed_out',
+      'err_name_not_resolved',
+      'err_address_unreachable',
+      'err_internet_disconnected',
+      'err_network_changed',
+      'err_proxy_connection_failed',
+      'connection reset',
+      'connection closed',
+      'connection aborted',
+      'connection refused',
+      'connection timed out',
+      'network is unreachable',
+      'software caused connection abort',
+      'failed to connect',
+    ];
+    return networkErrorKeywords.any(normalized.contains);
   }
 
   Future<void> _syncSessionCookiesToCurrentHost() async {

@@ -691,8 +691,13 @@ class _HostSettingsPageState extends State<_HostSettingsPage> {
     final String? pinnedHost = _snapshot?.sessionPinnedHost
         ?.trim()
         .toLowerCase();
+    final String normalizedPinnedHost = pinnedHost ?? '';
     final String recommendedHost =
         _snapshot?.selectedHost.trim().toLowerCase() ?? '';
+    final Set<String> selectableHosts = <String>{
+      for (final String host in widget.candidateHosts)
+        if (_normalizeHostValue(host).isNotEmpty) _normalizeHostValue(host),
+    };
     final Map<String, HostProbeRecord> probes = <String, HostProbeRecord>{
       for (final HostProbeRecord probe
           in _snapshot?.probes ?? const <HostProbeRecord>[])
@@ -700,18 +705,16 @@ class _HostSettingsPageState extends State<_HostSettingsPage> {
     };
     final Set<String> seenHosts = <String>{};
     final List<String> hosts = <String>[
-      for (final String rawHost in widget.candidateHosts)
-        if (rawHost.trim().isNotEmpty &&
-            seenHosts.add(rawHost.trim().toLowerCase()))
-          rawHost.trim().toLowerCase(),
+      for (final String host in selectableHosts)
+        if (seenHosts.add(host)) host,
       if (normalizedCurrentHost.isNotEmpty &&
           seenHosts.add(normalizedCurrentHost))
         normalizedCurrentHost,
-      for (final HostProbeRecord probe
-          in _snapshot?.probes ?? const <HostProbeRecord>[])
-        if (probe.host.trim().isNotEmpty &&
-            seenHosts.add(probe.host.trim().toLowerCase()))
-          probe.host.trim().toLowerCase(),
+      if (normalizedPinnedHost.isNotEmpty &&
+          seenHosts.add(normalizedPinnedHost))
+        normalizedPinnedHost,
+      if (recommendedHost.isNotEmpty && seenHosts.add(recommendedHost))
+        recommendedHost,
     ];
 
     return Scaffold(
@@ -806,7 +809,10 @@ class _HostSettingsPageState extends State<_HostSettingsPage> {
                                 recommendedHost.isNotEmpty &&
                                 host == recommendedHost &&
                                 host != normalizedCurrentHost,
-                            enabled: !_isBusy && widget.onSelectHost != null,
+                            enabled:
+                                !_isBusy &&
+                                widget.onSelectHost != null &&
+                                selectableHosts.contains(host),
                             onTap: widget.onSelectHost == null
                                 ? null
                                 : () => _handleSelectHost(host),

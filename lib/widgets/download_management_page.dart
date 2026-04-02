@@ -2,6 +2,7 @@ import 'package:easy_copy/services/comic_download_service.dart';
 import 'package:easy_copy/services/download_queue_store.dart';
 import 'package:easy_copy/services/download_storage_service.dart';
 import 'package:easy_copy/widgets/settings_ui.dart';
+import 'package:easy_copy/widgets/top_notice.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -92,7 +93,7 @@ class DownloadManagementEntryCard extends StatelessWidget {
   }
 }
 
-class DownloadManagementPage extends StatelessWidget {
+class DownloadManagementPage extends StatefulWidget {
   const DownloadManagementPage({
     required this.queueListenable,
     required this.storageStateListenable,
@@ -108,6 +109,7 @@ class DownloadManagementPage extends StatelessWidget {
     required this.onRetryTask,
     this.onPickStorageDirectory,
     this.onResetStorageDirectory,
+    this.onRescanStorageDirectory,
     super.key,
   });
 
@@ -126,94 +128,90 @@ class DownloadManagementPage extends StatelessWidget {
   final ValueChanged<DownloadQueueTask> onRetryTask;
   final VoidCallback? onPickStorageDirectory;
   final VoidCallback? onResetStorageDirectory;
+  final AsyncValueGetter<String>? onRescanStorageDirectory;
 
+  @override
+  State<DownloadManagementPage> createState() => _DownloadManagementPageState();
+}
+
+class _DownloadManagementPageState extends State<DownloadManagementPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('下载管理')),
       body: SafeArea(
         child: ValueListenableBuilder<DownloadQueueSnapshot>(
-          valueListenable: queueListenable,
-          builder:
-              (
-                BuildContext context,
-                DownloadQueueSnapshot snapshot,
-                Widget? _,
-              ) {
-                return ValueListenableBuilder<DownloadStorageState>(
-                  valueListenable: storageStateListenable,
-                  builder:
-                      (
-                        BuildContext context,
-                        DownloadStorageState storageState,
-                        Widget? _,
-                      ) {
-                        return ValueListenableBuilder<bool>(
-                          valueListenable: storageBusyListenable,
-                          builder:
-                              (
-                                BuildContext context,
-                                bool storageBusy,
-                                Widget? _,
-                              ) {
-                                return ValueListenableBuilder<
-                                  DownloadStorageMigrationProgress?
-                                >(
-                                  valueListenable: migrationProgressListenable,
-                                  builder:
-                                      (
-                                        BuildContext context,
-                                        DownloadStorageMigrationProgress?
-                                        migrationProgress,
-                                        Widget? _,
-                                      ) {
-                                        final bool storageEditingAllowed =
-                                            snapshot.isEmpty ||
-                                            snapshot.isPaused;
-                                        return ListView(
-                                          padding: const EdgeInsets.all(16),
-                                          children: <Widget>[
-                                            _CurrentTaskSection(
-                                              snapshot: snapshot,
-                                              onPauseQueue: onPauseQueue,
-                                              onResumeQueue: onResumeQueue,
-                                            ),
-                                            const SizedBox(height: 16),
-                                            _QueueSection(
-                                              snapshot: snapshot,
-                                              onPauseQueue: onPauseQueue,
-                                              onResumeQueue: onResumeQueue,
-                                              onClearQueue: onClearQueue,
-                                              onStopComicTasks:
-                                                  onStopComicTasks,
-                                              onRemoveComic: onRemoveComic,
-                                              onRemoveTask: onRemoveTask,
-                                              onRetryTask: onRetryTask,
-                                            ),
-                                            const SizedBox(height: 16),
-                                            _StorageSection(
-                                              state: storageState,
-                                              busy: storageBusy,
-                                              migrationProgress:
-                                                  migrationProgress,
-                                              editingAllowed:
-                                                  storageEditingAllowed,
-                                              supportsCustomDirectorySelection:
-                                                  supportsCustomDirectorySelection,
-                                              onPickStorageDirectory:
-                                                  onPickStorageDirectory,
-                                              onResetStorageDirectory:
-                                                  onResetStorageDirectory,
-                                            ),
-                                          ],
-                                        );
-                                      },
-                                );
-                              },
-                        );
-                      },
-                );
-              },
+          valueListenable: widget.queueListenable,
+          builder: (BuildContext context, DownloadQueueSnapshot snapshot, Widget? _) {
+            return ValueListenableBuilder<DownloadStorageState>(
+              valueListenable: widget.storageStateListenable,
+              builder:
+                  (
+                    BuildContext context,
+                    DownloadStorageState storageState,
+                    Widget? _,
+                  ) {
+                    return ValueListenableBuilder<bool>(
+                      valueListenable: widget.storageBusyListenable,
+                      builder:
+                          (BuildContext context, bool storageBusy, Widget? _) {
+                            return ValueListenableBuilder<
+                              DownloadStorageMigrationProgress?
+                            >(
+                              valueListenable:
+                                  widget.migrationProgressListenable,
+                              builder:
+                                  (
+                                    BuildContext context,
+                                    DownloadStorageMigrationProgress?
+                                    migrationProgress,
+                                    Widget? _,
+                                  ) {
+                                    const bool storageEditingAllowed = true;
+                                    return ListView(
+                                      padding: const EdgeInsets.all(16),
+                                      children: <Widget>[
+                                        _CurrentTaskSection(
+                                          snapshot: snapshot,
+                                          onPauseQueue: widget.onPauseQueue,
+                                          onResumeQueue: widget.onResumeQueue,
+                                        ),
+                                        const SizedBox(height: 16),
+                                        _QueueSection(
+                                          snapshot: snapshot,
+                                          onPauseQueue: widget.onPauseQueue,
+                                          onResumeQueue: widget.onResumeQueue,
+                                          onClearQueue: widget.onClearQueue,
+                                          onStopComicTasks:
+                                              widget.onStopComicTasks,
+                                          onRemoveComic: widget.onRemoveComic,
+                                          onRemoveTask: widget.onRemoveTask,
+                                          onRetryTask: widget.onRetryTask,
+                                        ),
+                                        const SizedBox(height: 16),
+                                        _StorageSection(
+                                          state: storageState,
+                                          busy: storageBusy,
+                                          migrationProgress: migrationProgress,
+                                          editingAllowed: storageEditingAllowed,
+                                          supportsCustomDirectorySelection: widget
+                                              .supportsCustomDirectorySelection,
+                                          onPickStorageDirectory:
+                                              widget.onPickStorageDirectory,
+                                          onResetStorageDirectory:
+                                              widget.onResetStorageDirectory,
+                                          onRescanStorageDirectory:
+                                              widget.onRescanStorageDirectory,
+                                        ),
+                                      ],
+                                    );
+                                  },
+                            );
+                          },
+                    );
+                  },
+            );
+          },
         ),
       ),
     );
@@ -579,7 +577,7 @@ class _QueueTaskTile extends StatelessWidget {
   }
 }
 
-class _StorageSection extends StatelessWidget {
+class _StorageSection extends StatefulWidget {
   const _StorageSection({
     required this.state,
     required this.busy,
@@ -588,6 +586,7 @@ class _StorageSection extends StatelessWidget {
     required this.supportsCustomDirectorySelection,
     this.onPickStorageDirectory,
     this.onResetStorageDirectory,
+    this.onRescanStorageDirectory,
   });
 
   final DownloadStorageState state;
@@ -597,15 +596,33 @@ class _StorageSection extends StatelessWidget {
   final bool supportsCustomDirectorySelection;
   final VoidCallback? onPickStorageDirectory;
   final VoidCallback? onResetStorageDirectory;
+  final AsyncValueGetter<String>? onRescanStorageDirectory;
+
+  @override
+  State<_StorageSection> createState() => _StorageSectionState();
+}
+
+class _StorageSectionState extends State<_StorageSection> {
+  bool _isRescanning = false;
 
   @override
   Widget build(BuildContext context) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
-    final String retentionText = state.mayBeRemovedOnUninstall
+    final String retentionText = widget.state.mayBeRemovedOnUninstall
         ? '卸载应用后，这个目录中的缓存通常会一起删除。'
         : '卸载应用后，这个目录中的缓存通常会保留。';
-    final bool canEdit = editingAllowed && !busy && migrationProgress == null;
-    final bool showLoadingState = state.isLoading && migrationProgress == null;
+    final bool canEdit =
+        widget.editingAllowed &&
+        !widget.busy &&
+        widget.migrationProgress == null &&
+        !_isRescanning;
+    final bool canRescan =
+        !widget.busy &&
+        widget.migrationProgress == null &&
+        widget.state.isReady &&
+        !_isRescanning;
+    final bool showLoadingState =
+        widget.state.isLoading && widget.migrationProgress == null;
     return AppSurfaceCard(
       title: '缓存目录',
       child: Column(
@@ -614,82 +631,127 @@ class _StorageSection extends StatelessWidget {
           if (showLoadingState)
             const Text('正在读取缓存目录…')
           else ...<Widget>[
-            if (!state.isLoading) ...<Widget>[
+            if (!widget.state.isLoading) ...<Widget>[
               _InfoRow(
                 icon: Icons.folder_rounded,
-                text: state.displayPath.isEmpty ? '当前目录不可用' : state.displayPath,
+                text: widget.state.displayPath.isEmpty
+                    ? '当前目录不可用'
+                    : widget.state.displayPath,
               ),
               const SizedBox(height: 8),
               _InfoRow(
-                icon: state.isCustom
+                icon: widget.state.isCustom
                     ? Icons.sd_storage_rounded
                     : Icons.phone_android_rounded,
-                text: state.isCustom ? '当前使用自定义目录' : '当前使用默认目录',
+                text: widget.state.isCustom ? '当前使用自定义目录' : '当前使用默认目录',
               ),
               const SizedBox(height: 8),
               _InfoRow(icon: Icons.info_outline_rounded, text: retentionText),
-              if (state.errorMessage.isNotEmpty) ...<Widget>[
+              if (widget.state.errorMessage.isNotEmpty) ...<Widget>[
                 const SizedBox(height: 10),
                 Text(
-                  state.errorMessage,
+                  widget.state.errorMessage,
                   style: TextStyle(color: colorScheme.error, height: 1.4),
                 ),
               ],
             ],
-            if (!editingAllowed) ...<Widget>[
-              const SizedBox(height: 10),
-              Text(
-                '请先暂停缓存队列后再切换目录。',
-                style: TextStyle(
-                  color: colorScheme.onSurface.withValues(alpha: 0.72),
-                  height: 1.4,
-                ),
-              ),
-            ],
-            if (supportsCustomDirectorySelection) ...<Widget>[
+            if (widget.supportsCustomDirectorySelection) ...<Widget>[
               const SizedBox(height: 14),
               Wrap(
                 spacing: 10,
                 runSpacing: 10,
                 children: <Widget>[
                   FilledButton.tonalIcon(
-                    onPressed: canEdit ? onPickStorageDirectory : null,
-                    icon: busy
+                    onPressed: canEdit ? widget.onPickStorageDirectory : null,
+                    icon: widget.busy
                         ? const SizedBox(
                             width: 16,
                             height: 16,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.drive_folder_upload_rounded),
-                    label: Text(state.isCustom ? '更换位置' : '选择存储位置'),
+                    label: Text(widget.state.isCustom ? '更换位置' : '选择存储位置'),
                   ),
-                  if (state.isCustom)
+                  if (widget.state.isCustom)
                     OutlinedButton.icon(
-                      onPressed: canEdit ? onResetStorageDirectory : null,
+                      onPressed: canEdit
+                          ? widget.onResetStorageDirectory
+                          : null,
                       icon: const Icon(Icons.restore_rounded),
                       label: const Text('恢复默认'),
                     ),
+                  OutlinedButton.icon(
+                    onPressed: canRescan
+                        ? () => _handleRescanStorageDirectory(context)
+                        : null,
+                    icon: _isRescanning
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.manage_search_rounded),
+                    label: Text(_isRescanning ? '扫描中…' : '扫描当前目录'),
+                  ),
                 ],
               ),
             ],
-            if (!state.isLoading) ...<Widget>[
+            if (!widget.state.isLoading) ...<Widget>[
               const SizedBox(height: 10),
               Text(
-                '切换目录时会自动迁移已有缓存；迁移期间请勿退出应用。',
+                '切换目录后会后台迁移缓存，切换阶段会短暂停写。',
                 style: TextStyle(
                   color: colorScheme.onSurface.withValues(alpha: 0.72),
                   height: 1.4,
                 ),
               ),
             ],
-            if (migrationProgress != null) ...<Widget>[
+            if (widget.migrationProgress != null) ...<Widget>[
               const SizedBox(height: 14),
-              _MigrationProgressPanel(progress: migrationProgress!),
+              _MigrationProgressPanel(progress: widget.migrationProgress!),
             ],
           ],
         ],
       ),
     );
+  }
+
+  Future<void> _handleRescanStorageDirectory(BuildContext context) async {
+    final AsyncValueGetter<String>? callback = widget.onRescanStorageDirectory;
+    if (callback == null || _isRescanning) {
+      return;
+    }
+    setState(() {
+      _isRescanning = true;
+    });
+    try {
+      final String message = await callback();
+      if (!context.mounted || message.trim().isEmpty) {
+        return;
+      }
+      TopNotice.show(context, message, tone: _toneForMessage(message));
+    } catch (error) {
+      if (context.mounted) {
+        TopNotice.show(context, error.toString(), tone: TopNoticeTone.error);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRescanning = false;
+        });
+      }
+    }
+  }
+
+  TopNoticeTone _toneForMessage(String message) {
+    final String normalized = message.trim().toLowerCase();
+    if (normalized.contains('未发现')) {
+      return TopNoticeTone.warning;
+    }
+    if (normalized.contains('恢复') || normalized.contains('已')) {
+      return TopNoticeTone.success;
+    }
+    return TopNoticeTone.info;
   }
 }
 

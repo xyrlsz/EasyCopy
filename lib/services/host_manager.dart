@@ -13,6 +13,7 @@ const String defaultDesktopUserAgent =
 typedef HostNowProvider = DateTime Function();
 typedef HostDirectoryProvider = Future<Directory> Function();
 typedef HostProbeRunner = Future<HostProbeRecord> Function(String host);
+typedef HostConnectivityRunner = Future<bool> Function(String host);
 
 class HostProbeRecord {
   const HostProbeRecord({
@@ -100,47 +101,35 @@ class HostManager {
     HostDirectoryProvider? directoryProvider,
     HostNowProvider? now,
     HostProbeRunner? probeRunner,
+    HostConnectivityRunner? connectivityRunner,
     String userAgent = defaultDesktopUserAgent,
   }) : _client = client ?? http.Client(),
-       _candidateHosts = (candidateHosts ?? _defaultCandidateHosts)
-           .map(_normalizeHost)
-           .toSet()
-           .toList(growable: false),
+       _seedHosts = _normalizeHosts(
+         candidateHosts ?? _buildDefaultCandidateHosts(),
+       ),
+       _candidateHosts = const <String>[],
        _directoryProvider = directoryProvider ?? getApplicationSupportDirectory,
        _now = now ?? DateTime.now,
        _probeRunner = probeRunner,
+       _connectivityRunner = connectivityRunner,
        _userAgent = userAgent,
-       _currentHost = _normalizeHost(
-         (candidateHosts ?? _defaultCandidateHosts).first,
+       _currentHost = _firstHost(
+         candidateHosts ?? _buildDefaultCandidateHosts(),
        );
 
   static final HostManager instance = HostManager();
 
   static const Duration probeCacheTtl = Duration(hours: 12);
   static const Duration probeTimeout = Duration(seconds: 3);
-
-  static const List<String> _defaultCandidateHosts = <String>[
-    'www.2026copy.com',
-    '2026copy.com',
-    'www.2025copy.com',
-    '2025copy.com',
-    'www.copy20.com',
-    'copy20.com',
-    'www.copy-manga.com',
-    'copy-manga.com',
-    'www.copymanga.tv',
-    'copymanga.tv',
-    'www.mangacopy.com',
-    'mangacopy.com',
-    'www.copy2000.site',
-    'copy2000.site',
-  ];
+  static const Duration connectTimeout = Duration(seconds: 2);
 
   final http.Client _client;
-  final List<String> _candidateHosts;
+  final List<String> _seedHosts;
+  List<String> _candidateHosts;
   final HostDirectoryProvider _directoryProvider;
   final HostNowProvider _now;
   final HostProbeRunner? _probeRunner;
+  final HostConnectivityRunner? _connectivityRunner;
   final String _userAgent;
 
   Future<void>? _initialization;
@@ -150,7 +139,18 @@ class HostManager {
 
   List<String> get candidateHosts => List<String>.unmodifiable(_candidateHosts);
 
-  Set<String> get allowedHosts => _candidateHosts.toSet();
+  Set<String> get allowedHosts => <String>{
+    ..._seedHosts,
+    ..._candidateHosts,
+    if (_currentHost.isNotEmpty) _currentHost,
+    if ((_sessionPinnedHost ?? '').trim().isNotEmpty)
+      _normalizeHost(_sessionPinnedHost!),
+    if ((_snapshot?.selectedHost ?? '').trim().isNotEmpty)
+      _normalizeHost(_snapshot!.selectedHost),
+    for (final HostProbeRecord probe
+        in _snapshot?.probes ?? const <HostProbeRecord>[])
+      if (_normalizeHost(probe.host).isNotEmpty) _normalizeHost(probe.host),
+  };
 
   String get currentHost => _sessionPinnedHost ?? _currentHost;
 
@@ -174,22 +174,33 @@ class HostManager {
     if (!force &&
         _snapshot != null &&
         _now().difference(_snapshot!.checkedAt) < probeCacheTtl) {
+      _candidateHosts = _successfulProbeHosts(_snapshot!.probes);
       return;
     }
-    final List<HostProbeRecord> probes = await Future.wait(
-      _candidateHosts.map(_probeHost),
-    );
+    final List<String> reachableHosts = await _discoverReachableHosts();
+    final List<HostProbeRecord> probes = reachableHosts.isEmpty
+        ? const <HostProbeRecord>[]
+        : await Future.wait(reachableHosts.map(_probeHost));
     final List<HostProbeRecord> ranked = _sortProbes(probes);
-    final String nextHost = ranked
-        .firstWhere(
-          (HostProbeRecord probe) => probe.success,
-          orElse: () =>
-              HostProbeRecord(host: currentHost, success: true, latencyMs: 0),
-        )
-        .host;
-    _currentHost = nextHost;
+    _candidateHosts = _successfulProbeHosts(ranked);
+    final String? pinnedHost = _sessionPinnedHost == null
+        ? null
+        : _normalizeHost(_sessionPinnedHost!);
+    final bool pinnedIsAvailable =
+        pinnedHost != null &&
+        ranked.any(
+          (HostProbeRecord probe) =>
+              _normalizeHost(probe.host) == pinnedHost && probe.success,
+        );
+    if (pinnedHost != null && !pinnedIsAvailable) {
+      _sessionPinnedHost = null;
+    }
+    final String nextHost = _selectAutomaticHost(ranked);
+    if (nextHost.isNotEmpty) {
+      _currentHost = nextHost;
+    }
     _snapshot = HostProbeSnapshot(
-      selectedHost: nextHost,
+      selectedHost: nextHost.isEmpty ? _currentHost : nextHost,
       checkedAt: _now(),
       probes: ranked,
       sessionPinnedHost: _sessionPinnedHost,
@@ -200,12 +211,32 @@ class HostManager {
   Future<void> pinSessionHost(String host) async {
     await ensureInitialized();
     final String normalizedHost = _normalizeHost(host);
-    if (!_candidateHosts.contains(normalizedHost)) {
-      return;
+    if (normalizedHost.isEmpty) {
+      throw StateError('节点不可用，请选择测速成功的节点。');
     }
+    final HostProbeRecord? cachedProbe = _probeForHost(normalizedHost);
+    final bool cacheFresh =
+        _snapshot != null &&
+        _now().difference(_snapshot!.checkedAt) < probeCacheTtl;
+    final HostProbeRecord probe =
+        cachedProbe != null && cachedProbe.success && cacheFresh
+        ? cachedProbe
+        : await _validateSelectableHost(normalizedHost);
     _sessionPinnedHost = normalizedHost;
     _currentHost = normalizedHost;
-    await _persistCurrentState();
+    _candidateHosts = _mergeHosts(<String>[normalizedHost, ..._candidateHosts]);
+    _snapshot = HostProbeSnapshot(
+      selectedHost: (_snapshot?.selectedHost ?? '').trim().isEmpty
+          ? normalizedHost
+          : _normalizeHost(_snapshot!.selectedHost),
+      checkedAt: _now(),
+      probes: _upsertProbe(
+        probe,
+        _snapshot?.probes ?? const <HostProbeRecord>[],
+      ),
+      sessionPinnedHost: _sessionPinnedHost,
+    );
+    await _saveSnapshot();
   }
 
   Future<void> clearSessionPin() async {
@@ -294,10 +325,29 @@ class HostManager {
       _sessionPinnedHost = _snapshot!.sessionPinnedHost == null
           ? null
           : _normalizeHost(_snapshot!.sessionPinnedHost!);
+      _candidateHosts = _successfulProbeHosts(_snapshot!.probes);
     }
-    if (_sessionPinnedHost == null) {
-      await refreshProbes(force: true);
-    }
+    await refreshProbes(force: true);
+  }
+
+  Future<List<String>> _discoverReachableHosts() async {
+    final List<String> hostsToCheck = _mergeHosts(<String>[
+      ..._seedHosts,
+      _currentHost,
+      if (_sessionPinnedHost != null) _sessionPinnedHost!,
+      if ((_snapshot?.selectedHost ?? '').trim().isNotEmpty)
+        _snapshot!.selectedHost,
+      for (final HostProbeRecord probe
+          in _snapshot?.probes ?? const <HostProbeRecord>[])
+        probe.host,
+    ]);
+    final List<bool> reachability = await Future.wait(
+      hostsToCheck.map(_isHostReachable),
+    );
+    return <String>[
+      for (int index = 0; index < hostsToCheck.length; index += 1)
+        if (reachability[index]) hostsToCheck[index],
+    ];
   }
 
   Future<HostProbeRecord> _probeHost(String host) async {
@@ -328,6 +378,51 @@ class HostManager {
     }
   }
 
+  Future<bool> _isHostReachable(String host) async {
+    if (_connectivityRunner != null) {
+      return _connectivityRunner(host);
+    }
+    final String normalizedHost = _normalizeHost(host);
+    if (normalizedHost.isEmpty) {
+      return false;
+    }
+    try {
+      final List<InternetAddress> addresses = await InternetAddress.lookup(
+        normalizedHost,
+      ).timeout(connectTimeout);
+      if (addresses.isEmpty) {
+        return false;
+      }
+    } catch (_) {
+      return false;
+    }
+    Socket? socket;
+    try {
+      socket = await Socket.connect(
+        normalizedHost,
+        443,
+        timeout: connectTimeout,
+      );
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      socket?.destroy();
+    }
+  }
+
+  Future<HostProbeRecord> _validateSelectableHost(String host) async {
+    final bool reachable = await _isHostReachable(host);
+    if (!reachable) {
+      throw StateError('节点不可用，请选择测速成功的节点。');
+    }
+    final HostProbeRecord probe = await _probeHost(host);
+    if (!probe.success) {
+      throw StateError('节点不可用，请选择测速成功的节点。');
+    }
+    return probe;
+  }
+
   List<HostProbeRecord> _sortProbes(List<HostProbeRecord> probes) {
     final List<HostProbeRecord> ranked = probes.toList(growable: false);
     ranked.sort((HostProbeRecord left, HostProbeRecord right) {
@@ -337,6 +432,57 @@ class HostManager {
       return left.latencyMs.compareTo(right.latencyMs);
     });
     return ranked;
+  }
+
+  List<String> _successfulProbeHosts(List<HostProbeRecord> probes) {
+    return _mergeHosts(
+      probes
+          .where((HostProbeRecord probe) => probe.success)
+          .map((HostProbeRecord probe) => probe.host),
+    );
+  }
+
+  HostProbeRecord? _probeForHost(String host) {
+    final String normalizedHost = _normalizeHost(host);
+    return _snapshot?.probes.cast<HostProbeRecord?>().firstWhere(
+      (HostProbeRecord? probe) =>
+          probe != null && _normalizeHost(probe.host) == normalizedHost,
+      orElse: () => null,
+    );
+  }
+
+  List<HostProbeRecord> _upsertProbe(
+    HostProbeRecord probe,
+    List<HostProbeRecord> probes,
+  ) {
+    final String normalizedHost = _normalizeHost(probe.host);
+    final List<HostProbeRecord> updated = <HostProbeRecord>[probe];
+    for (final HostProbeRecord candidate in probes) {
+      if (_normalizeHost(candidate.host) == normalizedHost) {
+        continue;
+      }
+      updated.add(candidate);
+    }
+    return _sortProbes(updated);
+  }
+
+  String _selectAutomaticHost(List<HostProbeRecord> ranked) {
+    final HostProbeRecord? nextHost = ranked
+        .cast<HostProbeRecord?>()
+        .firstWhere(
+          (HostProbeRecord? probe) => probe != null && probe.success,
+          orElse: () => null,
+        );
+    if (nextHost != null) {
+      return _normalizeHost(nextHost.host);
+    }
+    final List<String> fallbackHosts = _mergeHosts(<String>[
+      ..._candidateHosts,
+      _currentHost,
+      if (_sessionPinnedHost != null) _sessionPinnedHost!,
+      ..._seedHosts,
+    ]);
+    return fallbackHosts.isEmpty ? '' : fallbackHosts.first;
   }
 
   Future<File> _snapshotFile() async {
@@ -388,6 +534,52 @@ class HostManager {
 
   static String _normalizeHost(String host) {
     return host.trim().toLowerCase();
+  }
+
+  static List<String> _buildDefaultCandidateHosts() {
+    final int year = DateTime.now().year;
+    return _normalizeHosts(<String>[
+      'www.${year + 1}copy.com',
+      '${year + 1}copy.com',
+      'www.${year}copy.com',
+      '${year}copy.com',
+      'www.${year - 1}copy.com',
+      '${year - 1}copy.com',
+      'www.copy20.com',
+      'copy20.com',
+      'www.copy-manga.com',
+      'copy-manga.com',
+      'www.copymanga.tv',
+      'copymanga.tv',
+      'www.mangacopy.com',
+      'mangacopy.com',
+      'www.copy2000.site',
+      'copy2000.site',
+      'www.copy2000.online',
+      'copy2000.online',
+    ]);
+  }
+
+  static List<String> _normalizeHosts(Iterable<String> hosts) {
+    final List<String> values = <String>[];
+    final Set<String> seenHosts = <String>{};
+    for (final String host in hosts) {
+      final String normalizedHost = _normalizeHost(host);
+      if (normalizedHost.isEmpty || !seenHosts.add(normalizedHost)) {
+        continue;
+      }
+      values.add(normalizedHost);
+    }
+    return values;
+  }
+
+  static List<String> _mergeHosts(Iterable<String> hosts) {
+    return _normalizeHosts(hosts);
+  }
+
+  static String _firstHost(Iterable<String> hosts) {
+    final List<String> normalizedHosts = _normalizeHosts(hosts);
+    return normalizedHosts.isEmpty ? '' : normalizedHosts.first;
   }
 
   static bool _looksLikeSupportedHome(String body) {

@@ -2,6 +2,7 @@ import 'dart:collection';
 
 import 'package:easy_copy/config/app_config.dart';
 import 'package:easy_copy/models/page_models.dart';
+import 'package:easy_copy/services/debug_trace.dart';
 import 'package:easy_copy/services/navigation_request_guard.dart';
 import 'package:easy_copy/services/page_cache_store.dart';
 import 'package:easy_copy/services/page_probe_service.dart';
@@ -259,8 +260,15 @@ class PageRepository {
     NavigationRequestContext? requestContext,
   }) async {
     try {
+      DebugTrace.log('reader.html_loader_start', <String, Object?>{
+        'uri': uri.toString(),
+      });
       return await _htmlPageLoader(uri, authScope: requestedKey.authScope);
     } catch (error) {
+      DebugTrace.log('reader.html_loader_fallback', <String, Object?>{
+        'uri': uri.toString(),
+        'error': error.toString(),
+      });
       debugPrint(
         'Reader HTML loader failed for ${uri.path}; '
         'falling back to standard loader. $error',

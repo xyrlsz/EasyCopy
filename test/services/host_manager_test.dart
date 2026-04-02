@@ -42,6 +42,7 @@ void main() {
       final HostManager manager = HostManager(
         candidateHosts: const <String>['a.example.com', 'b.example.com'],
         directoryProvider: () async => tempDirectory,
+        connectivityRunner: (String host) async => true,
         probeRunner: (String host) async => HostProbeRecord(
           host: host,
           success: true,
@@ -59,6 +60,7 @@ void main() {
       final HostManager firstManager = HostManager(
         candidateHosts: const <String>['a.example.com', 'b.example.com'],
         directoryProvider: () async => tempDirectory,
+        connectivityRunner: (String host) async => true,
         probeRunner: (String host) async => HostProbeRecord(
           host: host,
           success: true,
@@ -71,6 +73,7 @@ void main() {
       final HostManager secondManager = HostManager(
         candidateHosts: const <String>['a.example.com', 'b.example.com'],
         directoryProvider: () async => tempDirectory,
+        connectivityRunner: (String host) async => true,
         probeRunner: (String host) async => HostProbeRecord(
           host: host,
           success: true,
@@ -83,5 +86,84 @@ void main() {
       expect(secondManager.sessionPinnedHost, 'a.example.com');
       expect(secondManager.currentHost, 'a.example.com');
     });
+
+    test('drops unavailable pinned host on startup and falls back', () async {
+      final File snapshotFile = File(
+        '${tempDirectory.path}${Platform.pathSeparator}host_probe.json',
+      );
+      await snapshotFile.writeAsString(
+        jsonEncode(<String, Object?>{
+          'selectedHost': 'a.example.com',
+          'checkedAt': DateTime(2026, 4, 1).toIso8601String(),
+          'pinMode': 'manual',
+          'sessionPinnedHost': 'a.example.com',
+          'probes': <Map<String, Object?>>[
+            <String, Object?>{
+              'host': 'a.example.com',
+              'success': true,
+              'latencyMs': 10,
+            },
+            <String, Object?>{
+              'host': 'b.example.com',
+              'success': true,
+              'latencyMs': 20,
+            },
+          ],
+        }),
+      );
+
+      final HostManager manager = HostManager(
+        candidateHosts: const <String>['a.example.com', 'b.example.com'],
+        directoryProvider: () async => tempDirectory,
+        connectivityRunner: (String host) async => host == 'b.example.com',
+        probeRunner: (String host) async => HostProbeRecord(
+          host: host,
+          success: host == 'b.example.com',
+          latencyMs: host == 'b.example.com' ? 12 : 999999,
+        ),
+      );
+
+      await manager.ensureInitialized();
+
+      expect(manager.sessionPinnedHost, isNull);
+      expect(manager.currentHost, 'b.example.com');
+      expect(manager.candidateHosts, const <String>['b.example.com']);
+    });
+
+    test(
+      'only keeps reachable successful hosts as selectable candidates',
+      () async {
+        final HostManager manager = HostManager(
+          candidateHosts: const <String>[
+            'a.example.com',
+            'b.example.com',
+            'c.example.com',
+          ],
+          directoryProvider: () async => tempDirectory,
+          connectivityRunner: (String host) async => host != 'c.example.com',
+          probeRunner: (String host) async => HostProbeRecord(
+            host: host,
+            success: host == 'a.example.com',
+            latencyMs: switch (host) {
+              'a.example.com' => 15,
+              'b.example.com' => 30,
+              _ => 999999,
+            },
+          ),
+        );
+
+        await manager.ensureInitialized();
+
+        expect(manager.candidateHosts, const <String>['a.example.com']);
+        expect(
+          manager.snapshot?.probes.map((HostProbeRecord probe) => probe.host),
+          containsAll(<String>['a.example.com', 'b.example.com']),
+        );
+        expect(
+          manager.snapshot?.probes.map((HostProbeRecord probe) => probe.host),
+          isNot(contains('c.example.com')),
+        );
+      },
+    );
   });
 }

@@ -463,6 +463,7 @@ class ProfileLibraryItem {
     required this.href,
     this.subtitle = '',
     this.secondaryText = '',
+    this.updatedAt = '',
   });
 
   factory ProfileLibraryItem.fromJson(Map<String, Object?> json) {
@@ -472,6 +473,7 @@ class ProfileLibraryItem {
       href: _stringValue(json['href']),
       subtitle: _stringValue(json['subtitle']),
       secondaryText: _stringValue(json['secondaryText']),
+      updatedAt: _stringValue(json['updatedAt']),
     );
   }
 
@@ -480,6 +482,7 @@ class ProfileLibraryItem {
   final String href;
   final String subtitle;
   final String secondaryText;
+  final String updatedAt;
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
@@ -488,6 +491,7 @@ class ProfileLibraryItem {
       'href': href,
       'subtitle': subtitle,
       'secondaryText': secondaryText,
+      'updatedAt': updatedAt,
     };
   }
 }

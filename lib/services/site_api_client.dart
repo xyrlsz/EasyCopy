@@ -426,12 +426,19 @@ class SiteApiClient {
   }) async {
     final int normalizedPage = page < 1 ? 1 : page;
     final int offset = (normalizedPage - 1) * _profilePageSize;
+    final Map<String, String> queryParameters = <String, String>{
+      'offset': '$offset',
+      'limit': '$_profilePageSize',
+    };
+    if (view == ProfileSubview.collections) {
+      queryParameters.addAll(const <String, String>{
+        'free_type': '1',
+        'ordering': '-datetime_updated',
+      });
+    }
     final Map<String, Object?> payload = await _getJson(
       path,
-      queryParameters: <String, String>{
-        'offset': '$offset',
-        'limit': '$_profilePageSize',
-      },
+      queryParameters: queryParameters,
     );
     final Map<String, Object?> results = _asMap(payload['results']);
     final List<Map<String, Object?>> items = <Map<String, Object?>>[
@@ -550,7 +557,7 @@ class SiteApiClient {
   }
 
   List<ProfileLibraryItem> _parseCollections(Object? results) {
-    return _extractList(results)
+    final List<ProfileLibraryItem> items = _extractList(results)
         .map((Map<String, Object?> item) {
           final Map<String, Object?> comic = _firstNonEmptyMap(item, <String>[
             'comic',
@@ -564,6 +571,31 @@ class SiteApiClient {
             'pathWord',
             'slug',
           ]);
+          final String updatedAt =
+              _pickString(source, <String>[
+                'datetime_updated',
+                'updated_at',
+                'updatedAt',
+                'last_update_time',
+                'last_update_at',
+                'update_time',
+              ]).isNotEmpty
+              ? _pickString(source, <String>[
+                  'datetime_updated',
+                  'updated_at',
+                  'updatedAt',
+                  'last_update_time',
+                  'last_update_at',
+                  'update_time',
+                ])
+              : _pickString(item, <String>[
+                  'datetime_updated',
+                  'updated_at',
+                  'updatedAt',
+                  'last_update_time',
+                  'last_update_at',
+                  'update_time',
+                ]);
           return ProfileLibraryItem(
             title: _pickString(source, <String>['name', 'title']),
             coverUrl: _pickString(source, <String>[
@@ -582,10 +614,13 @@ class SiteApiClient {
               'datetime_updated',
               'status',
             ]),
+            updatedAt: updatedAt,
           );
         })
         .where((ProfileLibraryItem item) => item.title.isNotEmpty)
         .toList(growable: false);
+    items.sort(_compareProfileLibraryItemByUpdatedAtDesc);
+    return items;
   }
 
   List<ProfileHistoryItem> _parseHistory(Object? results) {
@@ -820,5 +855,48 @@ class SiteApiClient {
       return value == '1' || value.toLowerCase() == 'true';
     }
     return false;
+  }
+
+  int _compareProfileLibraryItemByUpdatedAtDesc(
+    ProfileLibraryItem left,
+    ProfileLibraryItem right,
+  ) {
+    final DateTime? leftUpdatedAt = _tryParseSortDateTime(left.updatedAt);
+    final DateTime? rightUpdatedAt = _tryParseSortDateTime(right.updatedAt);
+    if (leftUpdatedAt != null && rightUpdatedAt != null) {
+      final int dateCompare = rightUpdatedAt.compareTo(leftUpdatedAt);
+      if (dateCompare != 0) {
+        return dateCompare;
+      }
+    } else if (leftUpdatedAt != null) {
+      return -1;
+    } else if (rightUpdatedAt != null) {
+      return 1;
+    }
+    final int textCompare = right.updatedAt.compareTo(left.updatedAt);
+    if (textCompare != 0) {
+      return textCompare;
+    }
+    return left.title.compareTo(right.title);
+  }
+
+  DateTime? _tryParseSortDateTime(String value) {
+    final String normalized = value.trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    final List<String> candidates = <String>{
+      normalized,
+      normalized.replaceAll('/', '-'),
+      normalized.replaceFirst(' ', 'T'),
+      normalized.replaceAll('/', '-').replaceFirst(' ', 'T'),
+    }.toList(growable: false);
+    for (final String candidate in candidates) {
+      final DateTime? parsed = DateTime.tryParse(candidate);
+      if (parsed != null) {
+        return parsed;
+      }
+    }
+    return null;
   }
 }

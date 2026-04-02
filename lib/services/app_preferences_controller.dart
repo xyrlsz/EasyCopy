@@ -70,6 +70,6 @@ class AppPreferencesController extends ChangeNotifier {
     _preferences = nextPreferences;
     notifyListeners();
     _persistChain = _persistChain.then((_) => _store.write(_preferences));
-    unawaited(_persistChain);
+    await _persistChain;
   }
 }

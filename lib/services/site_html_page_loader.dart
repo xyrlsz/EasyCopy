@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:easy_copy/config/app_config.dart';
 import 'package:easy_copy/models/page_models.dart';
+import 'package:easy_copy/services/debug_trace.dart';
 import 'package:easy_copy/services/host_manager.dart';
 import 'package:easy_copy/services/site_html_page_parser.dart';
 import 'package:easy_copy/services/site_session.dart';
@@ -32,6 +33,7 @@ class SiteHtmlPageLoader {
   static final SiteHtmlPageLoader instance = SiteHtmlPageLoader();
 
   static const int _maxRedirects = 6;
+  static const Duration _requestTimeout = Duration(seconds: 12);
 
   final http.Client _client;
   final SiteSession _session;
@@ -96,12 +98,25 @@ class SiteHtmlPageLoader {
       redirectCount <= _maxRedirects;
       redirectCount += 1
     ) {
+      final Stopwatch stopwatch = Stopwatch()..start();
       final http.Request request = http.Request('GET', currentUri)
         ..followRedirects = false
         ..maxRedirects = 1
         ..headers.addAll(headers);
-      final http.StreamedResponse response = await _client.send(request);
-      final List<int> bytes = await response.stream.toBytes();
+      final http.StreamedResponse response = await _client
+          .send(request)
+          .timeout(_requestTimeout);
+      final List<int> bytes = await response.stream.toBytes().timeout(
+        _requestTimeout,
+      );
+      if (currentUri.path.toLowerCase().contains('/chapter/')) {
+        DebugTrace.log('reader.html_request_complete', <String, Object?>{
+          'uri': currentUri.toString(),
+          'statusCode': response.statusCode,
+          'elapsedMs': stopwatch.elapsedMilliseconds,
+          'byteCount': bytes.length,
+        });
+      }
 
       if (_isRedirectStatus(response.statusCode)) {
         final String location = (response.headers['location'] ?? '').trim();

@@ -7,11 +7,17 @@ import 'package:path_provider/path_provider.dart';
 typedef DownloadStorageMigrationDirectoryProvider =
     Future<Directory> Function();
 
+enum DownloadStorageMigrationStep { copying, switching, cleaning }
+
 class PendingDownloadStorageMigration {
   const PendingDownloadStorageMigration({
     required this.from,
     required this.to,
     required this.createdAt,
+    required this.storageKey,
+    required this.activeStorageKey,
+    this.phase = DownloadStorageMigrationStep.copying,
+    this.cleanupPending = false,
   });
 
   factory PendingDownloadStorageMigration.fromJson(Map<String, Object?> json) {
@@ -31,18 +37,53 @@ class PendingDownloadStorageMigration {
       createdAt:
           DateTime.tryParse((json['createdAt'] as String?) ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
+      storageKey: (json['storageKey'] as String?)?.trim() ?? '',
+      activeStorageKey: (json['activeStorageKey'] as String?)?.trim() ?? '',
+      phase: DownloadStorageMigrationStep.values.firstWhere(
+        (DownloadStorageMigrationStep entry) => entry.name == json['phase'],
+        orElse: () => DownloadStorageMigrationStep.copying,
+      ),
+      cleanupPending: (json['cleanupPending'] as bool?) ?? false,
     );
   }
 
   final DownloadPreferences from;
   final DownloadPreferences to;
   final DateTime createdAt;
+  final String storageKey;
+  final String activeStorageKey;
+  final DownloadStorageMigrationStep phase;
+  final bool cleanupPending;
+
+  PendingDownloadStorageMigration copyWith({
+    DownloadPreferences? from,
+    DownloadPreferences? to,
+    DateTime? createdAt,
+    String? storageKey,
+    String? activeStorageKey,
+    DownloadStorageMigrationStep? phase,
+    bool? cleanupPending,
+  }) {
+    return PendingDownloadStorageMigration(
+      from: from ?? this.from,
+      to: to ?? this.to,
+      createdAt: createdAt ?? this.createdAt,
+      storageKey: storageKey ?? this.storageKey,
+      activeStorageKey: activeStorageKey ?? this.activeStorageKey,
+      phase: phase ?? this.phase,
+      cleanupPending: cleanupPending ?? this.cleanupPending,
+    );
+  }
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
       'from': from.toJson(),
       'to': to.toJson(),
       'createdAt': createdAt.toIso8601String(),
+      'storageKey': storageKey,
+      'activeStorageKey': activeStorageKey,
+      'phase': phase.name,
+      'cleanupPending': cleanupPending,
     };
   }
 }

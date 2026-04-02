@@ -272,6 +272,20 @@ class DownloadStorageService {
     return '${normalized.substring(0, headLength)}...$tail';
   }
 
+  String storageKeyForState(DownloadStorageState state) {
+    if (state.isDocumentTree) {
+      final String treeUri = state.documentTreeUri.trim();
+      if (treeUri.isNotEmpty) {
+        return 'tree:$treeUri';
+      }
+      return 'tree:${state.displayPath}';
+    }
+    final String rootPath = state.rootPath.trim().isNotEmpty
+        ? state.rootPath
+        : state.basePath;
+    return 'file:${_normalizedPath(rootPath)}';
+  }
+
   Future<DownloadPreferences> _loadPreferences() async {
     if (_preferencesProvider != null) {
       return _preferencesProvider();

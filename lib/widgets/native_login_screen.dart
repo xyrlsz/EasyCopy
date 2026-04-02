@@ -126,110 +126,183 @@ class _NativeLoginScreenState extends State<NativeLoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colorScheme = theme.colorScheme;
+    final bool isDark = theme.brightness == Brightness.dark;
+
     return Scaffold(
+      backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(title: const Text('登录')),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Container(
-              constraints: const BoxConstraints(maxWidth: 420),
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(24),
+      body: Container(
+        key: const ValueKey<String>('native_login_backdrop'),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: <Color>[
+              colorScheme.surfaceContainerLowest,
+              theme.scaffoldBackgroundColor,
+              colorScheme.surfaceContainerLow.withValues(
+                alpha: isDark ? 0.96 : 0.78,
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  TextField(
-                    controller: _usernameController,
-                    enabled: !_isSubmitting && !_isLoadingSavedCredentials,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: '账号',
-                      border: OutlineInputBorder(),
+            ],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(20),
+              child: Container(
+                key: const ValueKey<String>('native_login_card'),
+                constraints: const BoxConstraints(maxWidth: 420),
+                padding: const EdgeInsets.all(22),
+                decoration: BoxDecoration(
+                  color: colorScheme.surface,
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(color: colorScheme.outlineVariant),
+                  boxShadow: <BoxShadow>[
+                    BoxShadow(
+                      color: Colors.black.withValues(
+                        alpha: isDark ? 0.26 : 0.08,
+                      ),
+                      blurRadius: isDark ? 24 : 32,
+                      offset: const Offset(0, 12),
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: _passwordController,
-                    enabled: !_isSubmitting && !_isLoadingSavedCredentials,
-                    obscureText: _obscurePassword,
-                    onSubmitted: (_) => _submit(),
-                    decoration: InputDecoration(
-                      labelText: '密码',
-                      border: const OutlineInputBorder(),
-                      suffixIcon: IconButton(
-                        onPressed: () {
-                          setState(() {
-                            _obscurePassword = !_obscurePassword;
-                          });
-                        },
-                        icon: Icon(
-                          _obscurePassword
-                              ? Icons.visibility_rounded
-                              : Icons.visibility_off_rounded,
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          alignment: Alignment.center,
+                          child: Icon(
+                            Icons.lock_person_rounded,
+                            color: colorScheme.onPrimaryContainer,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                '继续登录',
+                                style: theme.textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '登录后即可同步收藏、历史与个人信息。',
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: colorScheme.onSurface.withValues(
+                                    alpha: 0.72,
+                                  ),
+                                  height: 1.4,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 22),
+                    TextField(
+                      controller: _usernameController,
+                      enabled: !_isSubmitting && !_isLoadingSavedCredentials,
+                      textInputAction: TextInputAction.next,
+                      autofillHints: const <String>[AutofillHints.username],
+                      decoration: const InputDecoration(labelText: '账号'),
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: _passwordController,
+                      enabled: !_isSubmitting && !_isLoadingSavedCredentials,
+                      obscureText: _obscurePassword,
+                      autofillHints: const <String>[AutofillHints.password],
+                      onSubmitted: (_) => _submit(),
+                      decoration: InputDecoration(
+                        labelText: '密码',
+                        suffixIcon: IconButton(
+                          onPressed: () {
+                            setState(() {
+                              _obscurePassword = !_obscurePassword;
+                            });
+                          },
+                          icon: Icon(
+                            _obscurePassword
+                                ? Icons.visibility_rounded
+                                : Icons.visibility_off_rounded,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  CheckboxListTile(
-                    value: _rememberPassword,
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    dense: true,
-                    title: const Text('记住密码'),
-                    onChanged: (_isSubmitting || _isLoadingSavedCredentials)
-                        ? null
-                        : (bool? value) {
-                            final bool nextValue = value ?? false;
-                            setState(() {
-                              _rememberPassword = nextValue;
-                            });
-                            if (!nextValue) {
-                              unawaited(_credentialsStore.clear());
-                            }
-                          },
-                  ),
-                  if ((_errorMessage ?? '').isNotEmpty) ...<Widget>[
-                    const SizedBox(height: 12),
-                    Text(
-                      _errorMessage!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                        height: 1.4,
+                    const SizedBox(height: 8),
+                    CheckboxListTile(
+                      value: _rememberPassword,
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      dense: true,
+                      title: const Text('记住密码'),
+                      onChanged: (_isSubmitting || _isLoadingSavedCredentials)
+                          ? null
+                          : (bool? value) {
+                              final bool nextValue = value ?? false;
+                              setState(() {
+                                _rememberPassword = nextValue;
+                              });
+                              if (!nextValue) {
+                                unawaited(_credentialsStore.clear());
+                              }
+                            },
+                    ),
+                    if ((_errorMessage ?? '').isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 12),
+                      Text(
+                        _errorMessage!,
+                        style: TextStyle(color: colorScheme.error, height: 1.4),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                        onPressed: (_isSubmitting || _isLoadingSavedCredentials)
+                            ? null
+                            : _submit,
+                        child: _isSubmitting
+                            ? SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: colorScheme.onPrimary,
+                                ),
+                              )
+                            : const Text('登录'),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: TextButton(
+                        onPressed: (_isSubmitting || _isLoadingSavedCredentials)
+                            ? null
+                            : _openWebLogin,
+                        child: const Text('使用网页登录 / 注册'),
                       ),
                     ),
                   ],
-                  const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: (_isSubmitting || _isLoadingSavedCredentials)
-                          ? null
-                          : _submit,
-                      child: _isSubmitting
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('登录'),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  SizedBox(
-                    width: double.infinity,
-                    child: TextButton(
-                      onPressed: (_isSubmitting || _isLoadingSavedCredentials)
-                          ? null
-                          : _openWebLogin,
-                      child: const Text('使用网页登录 / 注册'),
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
           ),

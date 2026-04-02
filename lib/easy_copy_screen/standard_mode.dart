@@ -329,60 +329,54 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
   Widget _buildDownloadManagementEntry() {
     return ValueListenableBuilder<DownloadQueueSnapshot>(
       valueListenable: _downloadQueueSnapshotNotifier,
-      builder:
-          (
-            BuildContext context,
-            DownloadQueueSnapshot queueSnapshot,
-            Widget? _,
-          ) {
-            return ValueListenableBuilder<DownloadStorageState>(
-              valueListenable: _downloadStorageStateNotifier,
-              builder:
-                  (
-                    BuildContext context,
-                    DownloadStorageState storageState,
-                    Widget? _,
-                  ) {
-                    final String statusLabel = queueSnapshot.isEmpty
-                        ? '空闲'
-                        : queueSnapshot.isPaused
-                        ? '已暂停'
-                        : '缓存中';
-                    final String queueLabel = queueSnapshot.isEmpty
-                        ? '0 话'
-                        : '${queueSnapshot.remainingCount} 话';
-                    return ValueListenableBuilder<
-                      DownloadStorageMigrationProgress?
-                    >(
-                      valueListenable:
-                          _downloadStorageMigrationProgressNotifier,
-                      builder:
-                          (
-                            BuildContext context,
-                            DownloadStorageMigrationProgress? migrationProgress,
-                            Widget? _,
-                          ) {
-                            final String pathLabel = migrationProgress != null
-                                ? '当前目录：${_downloadStorageService.summarizePath(migrationProgress.toPath.isNotEmpty ? migrationProgress.toPath : storageState.displayPath)}'
-                                : storageState.isLoading
-                                ? '正在读取缓存目录…'
-                                : storageState.errorMessage.isNotEmpty
-                                ? '目录异常：${storageState.errorMessage}'
-                                : '当前目录：${_downloadStorageService.summarizePath(storageState.displayPath)}';
-                            return DownloadManagementEntryCard(
-                              statusLabel: migrationProgress != null
-                                  ? '迁移中'
-                                  : statusLabel,
-                              queueLabel: queueLabel,
-                              pathLabel: pathLabel,
-                              noteLabel: migrationProgress?.message,
-                              onTap: _openDownloadManagementPage,
-                            );
-                          },
-                    );
-                  },
-            );
-          },
+      builder: (BuildContext context, DownloadQueueSnapshot queueSnapshot, Widget? _) {
+        return ValueListenableBuilder<DownloadStorageState>(
+          valueListenable: _downloadStorageStateNotifier,
+          builder:
+              (
+                BuildContext context,
+                DownloadStorageState storageState,
+                Widget? _,
+              ) {
+                final String statusLabel = queueSnapshot.isEmpty
+                    ? '空闲'
+                    : queueSnapshot.isPaused
+                    ? '已暂停'
+                    : '缓存中';
+                final String queueLabel = queueSnapshot.isEmpty
+                    ? '0 话'
+                    : '${queueSnapshot.remainingCount} 话';
+                return ValueListenableBuilder<
+                  DownloadStorageMigrationProgress?
+                >(
+                  valueListenable: _downloadStorageMigrationProgressNotifier,
+                  builder:
+                      (
+                        BuildContext context,
+                        DownloadStorageMigrationProgress? migrationProgress,
+                        Widget? _,
+                      ) {
+                        final String pathLabel = migrationProgress != null
+                            ? '当前目录：${_downloadStorageService.summarizePath(migrationProgress.toPath.isNotEmpty ? migrationProgress.toPath : storageState.displayPath)}'
+                            : storageState.isLoading
+                            ? '正在读取缓存目录…'
+                            : storageState.errorMessage.isNotEmpty
+                            ? '目录异常：${storageState.errorMessage}'
+                            : '当前目录：${_downloadStorageService.summarizePath(storageState.displayPath)}';
+                        return DownloadManagementEntryCard(
+                          statusLabel: migrationProgress != null
+                              ? '迁移中'
+                              : statusLabel,
+                          queueLabel: queueLabel,
+                          pathLabel: pathLabel,
+                          noteLabel: migrationProgress?.message,
+                          onTap: _openDownloadManagementPage,
+                        );
+                      },
+                );
+              },
+        );
+      },
     );
   }
 
@@ -425,6 +419,7 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
             onResetStorageDirectory: () {
               unawaited(_resetDownloadStorageDirectory());
             },
+            onRescanStorageDirectory: _rescanCurrentDownloadStorage,
           );
         },
       ),
