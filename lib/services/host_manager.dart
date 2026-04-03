@@ -133,6 +133,7 @@ class HostManager {
   final String _userAgent;
 
   Future<void>? _initialization;
+  Future<void>? _probeRefresh;
   HostProbeSnapshot? _snapshot;
   String _currentHost;
   String? _sessionPinnedHost;
@@ -167,7 +168,21 @@ class HostManager {
     return _initialization ??= _initialize();
   }
 
-  Future<void> refreshProbes({bool force = false}) async {
+  Future<void> refreshProbes({bool force = false}) {
+    final Future<void>? activeRefresh = _probeRefresh;
+    if (activeRefresh != null) {
+      return activeRefresh;
+    }
+    final Future<void> refresh = _refreshProbes(force: force);
+    _probeRefresh = refresh;
+    return refresh.whenComplete(() {
+      if (identical(_probeRefresh, refresh)) {
+        _probeRefresh = null;
+      }
+    });
+  }
+
+  Future<void> _refreshProbes({required bool force}) async {
     if (_initialization == null) {
       await ensureInitialized();
     }
@@ -327,7 +342,8 @@ class HostManager {
           : _normalizeHost(_snapshot!.sessionPinnedHost!);
       _candidateHosts = _successfulProbeHosts(_snapshot!.probes);
     }
-    await refreshProbes(force: true);
+    // Cold start should reuse the last known host immediately. Fresh probes run
+    // later in the background so the first screen is not blocked on network.
   }
 
   Future<List<String>> _discoverReachableHosts() async {

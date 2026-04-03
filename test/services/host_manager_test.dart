@@ -87,24 +87,23 @@ void main() {
       expect(secondManager.currentHost, 'a.example.com');
     });
 
-    test('drops unavailable pinned host on startup and falls back', () async {
+    test('restores stored host selection on startup without probing', () async {
+      final DateTime now = DateTime(2026, 4, 3, 10);
       final File snapshotFile = File(
         '${tempDirectory.path}${Platform.pathSeparator}host_probe.json',
       );
       await snapshotFile.writeAsString(
         jsonEncode(<String, Object?>{
-          'selectedHost': 'a.example.com',
-          'checkedAt': DateTime(2026, 4, 1).toIso8601String(),
-          'pinMode': 'manual',
-          'sessionPinnedHost': 'a.example.com',
+          'selectedHost': 'b.example.com',
+          'checkedAt': now.subtract(const Duration(days: 3)).toIso8601String(),
           'probes': <Map<String, Object?>>[
             <String, Object?>{
-              'host': 'a.example.com',
+              'host': 'b.example.com',
               'success': true,
               'latencyMs': 10,
             },
             <String, Object?>{
-              'host': 'b.example.com',
+              'host': 'a.example.com',
               'success': true,
               'latencyMs': 20,
             },
@@ -112,23 +111,114 @@ void main() {
         }),
       );
 
+      int connectivityCallCount = 0;
+      int probeCallCount = 0;
       final HostManager manager = HostManager(
         candidateHosts: const <String>['a.example.com', 'b.example.com'],
         directoryProvider: () async => tempDirectory,
-        connectivityRunner: (String host) async => host == 'b.example.com',
-        probeRunner: (String host) async => HostProbeRecord(
-          host: host,
-          success: host == 'b.example.com',
-          latencyMs: host == 'b.example.com' ? 12 : 999999,
-        ),
+        now: () => now,
+        connectivityRunner: (String host) async {
+          connectivityCallCount += 1;
+          return true;
+        },
+        probeRunner: (String host) async {
+          probeCallCount += 1;
+          return HostProbeRecord(
+            host: host,
+            success: true,
+            latencyMs: host == 'b.example.com' ? 10 : 20,
+          );
+        },
       );
 
       await manager.ensureInitialized();
 
-      expect(manager.sessionPinnedHost, isNull);
+      expect(connectivityCallCount, 0);
+      expect(probeCallCount, 0);
       expect(manager.currentHost, 'b.example.com');
-      expect(manager.candidateHosts, const <String>['b.example.com']);
+      expect(manager.candidateHosts, const <String>[
+        'b.example.com',
+        'a.example.com',
+      ]);
     });
+
+    test(
+      'uses first fallback host on startup when no snapshot exists',
+      () async {
+        int connectivityCallCount = 0;
+        int probeCallCount = 0;
+        final HostManager manager = HostManager(
+          candidateHosts: const <String>['a.example.com', 'b.example.com'],
+          directoryProvider: () async => tempDirectory,
+          connectivityRunner: (String host) async {
+            connectivityCallCount += 1;
+            return true;
+          },
+          probeRunner: (String host) async {
+            probeCallCount += 1;
+            return HostProbeRecord(
+              host: host,
+              success: true,
+              latencyMs: host == 'a.example.com' ? 10 : 20,
+            );
+          },
+        );
+
+        await manager.ensureInitialized();
+
+        expect(connectivityCallCount, 0);
+        expect(probeCallCount, 0);
+        expect(manager.currentHost, 'a.example.com');
+        expect(manager.candidateHosts, isEmpty);
+      },
+    );
+
+    test(
+      'drops unavailable pinned host when probes refresh and falls back',
+      () async {
+        final File snapshotFile = File(
+          '${tempDirectory.path}${Platform.pathSeparator}host_probe.json',
+        );
+        await snapshotFile.writeAsString(
+          jsonEncode(<String, Object?>{
+            'selectedHost': 'a.example.com',
+            'checkedAt': DateTime(2026, 4, 1).toIso8601String(),
+            'pinMode': 'manual',
+            'sessionPinnedHost': 'a.example.com',
+            'probes': <Map<String, Object?>>[
+              <String, Object?>{
+                'host': 'a.example.com',
+                'success': true,
+                'latencyMs': 10,
+              },
+              <String, Object?>{
+                'host': 'b.example.com',
+                'success': true,
+                'latencyMs': 20,
+              },
+            ],
+          }),
+        );
+
+        final HostManager manager = HostManager(
+          candidateHosts: const <String>['a.example.com', 'b.example.com'],
+          directoryProvider: () async => tempDirectory,
+          connectivityRunner: (String host) async => host == 'b.example.com',
+          probeRunner: (String host) async => HostProbeRecord(
+            host: host,
+            success: host == 'b.example.com',
+            latencyMs: host == 'b.example.com' ? 12 : 999999,
+          ),
+        );
+
+        await manager.ensureInitialized();
+        await manager.refreshProbes(force: true);
+
+        expect(manager.sessionPinnedHost, isNull);
+        expect(manager.currentHost, 'b.example.com');
+        expect(manager.candidateHosts, const <String>['b.example.com']);
+      },
+    );
 
     test(
       'only keeps reachable successful hosts as selectable candidates',
@@ -153,6 +243,7 @@ void main() {
         );
 
         await manager.ensureInitialized();
+        await manager.refreshProbes(force: true);
 
         expect(manager.candidateHosts, const <String>['a.example.com']);
         expect(

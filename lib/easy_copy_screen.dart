@@ -153,6 +153,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   List<CachedComicLibraryEntry> _cachedComics =
       const <CachedComicLibraryEntry>[];
   Future<void>? _cachedLibraryRefreshTask;
+  Future<void>? _backgroundHostRefreshTask;
   CacheLibraryRefreshReason? _queuedCachedLibraryRefreshReason;
   bool _queuedCachedLibraryForceRescan = false;
   int _downloadActiveLoadId = 0;
@@ -585,13 +586,12 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       _session.ensureInitialized(),
       _preferencesController.ensureInitialized(),
       _readerProgressStore.ensureInitialized(),
+      PageCacheStore.instance.ensureInitialized(),
     ]);
     DebugTrace.log('bootstrap.initialized', <String, Object?>{
       'bootId': _bootId,
       'elapsedMs': stopwatch.elapsedMilliseconds,
     });
-    await _refreshDownloadStorageState();
-    await _restoreDownloadQueue();
     final Uri homeUri = appDestinations.first.uri;
     if (!mounted) {
       return;
@@ -611,6 +611,10 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
   }
 
   Future<void> _runDeferredBootstrapTasks() async {
+    await Future.wait(<Future<void>>[
+      _refreshHostsInBackgroundAfterBootstrap(),
+      _prepareDeferredDownloadBootstrapState(),
+    ]);
     await _downloadQueueManager.recoverInterruptedStorageMigration();
     if (!_downloadQueueManager.shouldBypassCachedReaderLookup) {
       await _refreshCachedComics(reason: CacheLibraryRefreshReason.bootstrap);
@@ -622,6 +626,65 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       });
     }
     await _ensureDownloadQueueRunning();
+  }
+
+  Future<void> _prepareDeferredDownloadBootstrapState() {
+    return Future.wait(<Future<void>>[
+      _refreshDownloadStorageState(),
+      _restoreDownloadQueue(),
+    ]);
+  }
+
+  Future<void> _refreshHostsInBackgroundAfterBootstrap() {
+    final Future<void>? activeTask = _backgroundHostRefreshTask;
+    if (activeTask != null) {
+      return activeTask;
+    }
+    final Future<void> refreshTask =
+        _refreshHostsInBackgroundAfterBootstrapImpl();
+    _backgroundHostRefreshTask = refreshTask;
+    return refreshTask.whenComplete(() {
+      if (identical(_backgroundHostRefreshTask, refreshTask)) {
+        _backgroundHostRefreshTask = null;
+      }
+    });
+  }
+
+  Future<void> _refreshHostsInBackgroundAfterBootstrapImpl() async {
+    final String previousHost = _hostManager.currentHost;
+    final DateTime? previousCheckedAt = _hostManager.probeSnapshot?.checkedAt;
+    DebugTrace.log('host.bootstrap_probe_start', <String, Object?>{
+      'bootId': _bootId,
+      'currentHost': previousHost,
+      'checkedAt': previousCheckedAt?.toIso8601String(),
+    });
+    try {
+      await _hostManager.refreshProbes(force: true);
+      final String nextHost = _hostManager.currentHost;
+      final DateTime? nextCheckedAt = _hostManager.probeSnapshot?.checkedAt;
+      final bool hostChanged = nextHost != previousHost;
+      if (hostChanged) {
+        await _syncSessionCookiesToCurrentHost();
+      }
+      DebugTrace.log('host.bootstrap_probe_complete', <String, Object?>{
+        'bootId': _bootId,
+        'previousHost': previousHost,
+        'nextHost': nextHost,
+        'hostChanged': hostChanged,
+        'checkedAt': nextCheckedAt?.toIso8601String(),
+      });
+      if (!mounted || (!hostChanged && nextCheckedAt == previousCheckedAt)) {
+        return;
+      }
+      _mutateSessionState(() {}, syncSearch: false);
+    } catch (error) {
+      DebugTrace.log('host.bootstrap_probe_failed', <String, Object?>{
+        'bootId': _bootId,
+        'currentHost': previousHost,
+        'checkedAt': previousCheckedAt?.toIso8601String(),
+        'error': error.toString(),
+      });
+    }
   }
 
   WebViewController _buildController() {
