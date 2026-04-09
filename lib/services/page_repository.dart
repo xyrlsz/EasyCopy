@@ -6,7 +6,6 @@ import 'package:easy_copy/services/debug_trace.dart';
 import 'package:easy_copy/services/network_diagnostics.dart';
 import 'package:easy_copy/services/navigation_request_guard.dart';
 import 'package:easy_copy/services/page_cache_store.dart';
-import 'package:easy_copy/services/page_probe_service.dart';
 import 'package:easy_copy/services/site_api_client.dart';
 import 'package:flutter/foundation.dart';
 
@@ -78,13 +77,11 @@ class CachedPageHit {
 class PageRepository {
   PageRepository({
     PageCacheStore? cacheStore,
-    PageProbeService? probeService,
     SiteApiClient? apiClient,
     required StandardPageFreshLoader standardPageLoader,
     HtmlPageFreshLoader? htmlPageLoader,
     this.memoryCapacity = 48,
   }) : _cacheStore = cacheStore ?? PageCacheStore.instance,
-       _probeService = probeService ?? PageProbeService.instance,
        _apiClient = apiClient ?? SiteApiClient.instance,
        _standardPageLoader = standardPageLoader,
        _htmlPageLoader =
@@ -94,7 +91,6 @@ class PageRepository {
            });
 
   final PageCacheStore _cacheStore;
-  final PageProbeService _probeService;
   final SiteApiClient _apiClient;
   final StandardPageFreshLoader _standardPageLoader;
   final HtmlPageFreshLoader _htmlPageLoader;
@@ -307,46 +303,16 @@ class PageRepository {
     required CachedPageEnvelope envelope,
     NavigationRequestContext? requestContext,
   }) async {
-    if (_isProfileUri(uri) ||
-        _isSearchUri(uri) ||
-        _shouldForceFreshRevalidate(uri, key)) {
-      final EasyCopyPage page = await loadFresh(
-        uri,
-        authScope: key.authScope,
-        requestContext: requestContext,
-      );
-      final PageQueryKey finalKey = PageQueryKey.forUri(
-        Uri.parse(page.uri),
-        authScope: _authScopeForPage(page, key.authScope),
-      );
-      if (finalKey != key) {
-        _memoryCache.remove(key);
-      }
-      return;
-    }
-
-    final PageProbeResult probe = await _probeService.probe(uri);
-    if (probe.fingerprint == envelope.fingerprint) {
+    if (_canSkipNetworkRevalidate(uri, envelope: envelope)) {
       await _cacheStore.refreshValidation(
         key.routeKey,
         authScope: key.authScope,
       );
-      final CachedPageHit? currentHit = _memoryCache[key];
-      if (currentHit != null) {
-        final DateTime now = DateTime.now();
-        _putMemory(
-          currentHit.copyWith(
-            envelope: currentHit.envelope.copyWith(
-              fetchedAt: now,
-              validatedAt: now,
-              lastAccessedAt: now,
-            ),
-          ),
-        );
-      }
+      _refreshMemoryValidation(key);
       return;
     }
 
+    // Use a single fresh request instead of probe + follow-up fetch.
     final EasyCopyPage page = await loadFresh(
       uri,
       authScope: key.authScope,
@@ -359,6 +325,33 @@ class PageRepository {
     if (finalKey != key) {
       _memoryCache.remove(key);
     }
+  }
+
+  bool _canSkipNetworkRevalidate(
+    Uri uri, {
+    required CachedPageEnvelope envelope,
+  }) {
+    // Reader content is effectively immutable after publish; avoid reloading
+    // large chapter payloads on soft-expiry and just refresh local validation.
+    return envelope.pageType == EasyCopyPageType.reader &&
+        _isReaderChapterUri(uri);
+  }
+
+  void _refreshMemoryValidation(PageQueryKey key) {
+    final CachedPageHit? currentHit = _memoryCache[key];
+    if (currentHit == null) {
+      return;
+    }
+    final DateTime now = DateTime.now();
+    _putMemory(
+      currentHit.copyWith(
+        envelope: currentHit.envelope.copyWith(
+          fetchedAt: now,
+          validatedAt: now,
+          lastAccessedAt: now,
+        ),
+      ),
+    );
   }
 
   void _putMemory(CachedPageHit hit) {
@@ -396,10 +389,6 @@ class PageRepository {
         path.startsWith('/newest') ||
         path.startsWith('/rank') ||
         _isDetailUri(uri);
-  }
-
-  bool _shouldForceFreshRevalidate(Uri uri, PageQueryKey key) {
-    return key.authScope != 'guest' && _isDetailUri(uri);
   }
 
   String _authScopeForPage(EasyCopyPage page, String requestedAuthScope) {

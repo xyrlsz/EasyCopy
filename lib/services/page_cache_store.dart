@@ -318,7 +318,7 @@ class PageCacheStore {
       final File file = await _cacheFile();
       await file.parent.create(recursive: true);
       await file.writeAsString(
-        const JsonEncoder.withIndent('  ').convert(
+        jsonEncode(
           _entries.map((CachedPageEnvelope entry) => entry.toJson()).toList(),
         ),
       );
@@ -339,7 +339,7 @@ class PageCacheStore {
     return CachedPageEnvelope(
       routeKey: routeKey,
       pageType: page.type,
-      payload: page.toJson(),
+      payload: _cachePayloadForPage(page),
       fingerprint: fingerprint,
       fetchedAt: timestamp,
       validatedAt: timestamp,
@@ -348,6 +348,63 @@ class PageCacheStore {
       hardTtlSeconds: policy.hardTtl.inSeconds,
       authScope: authScope,
     );
+  }
+
+  static const Set<String> _rootPayloadKeys = <String>{'type', 'title', 'uri'};
+
+  static Map<String, Object?> _cachePayloadForPage(EasyCopyPage page) {
+    final Map<String, Object?> payload = Map<String, Object?>.from(
+      page.toJson(),
+    );
+    if (page is DetailPageData && page.chapterGroups.isNotEmpty) {
+      // `chapterGroups` already contains full chapter metadata. Keeping
+      // duplicated flattened `chapters` significantly increases cache size.
+      payload.remove('chapters');
+    }
+    return _compactMap(payload, isRoot: true);
+  }
+
+  static Map<String, Object?> _compactMap(
+    Map<String, Object?> source, {
+    required bool isRoot,
+  }) {
+    final Map<String, Object?> compacted = <String, Object?>{};
+    source.forEach((String key, Object? value) {
+      final Object? nextValue = _compactValue(value);
+      if (nextValue == null) {
+        if (isRoot && _rootPayloadKeys.contains(key)) {
+          compacted[key] = value;
+        }
+        return;
+      }
+      compacted[key] = nextValue;
+    });
+    return compacted;
+  }
+
+  static Object? _compactValue(Object? value) {
+    if (value == null) {
+      return null;
+    }
+    if (value is String) {
+      return value.isEmpty ? null : value;
+    }
+    if (value is List) {
+      final List<Object?> items = value
+          .map(_compactValue)
+          .where((Object? item) => item != null)
+          .toList(growable: false);
+      return items.isEmpty ? null : items;
+    }
+    if (value is Map) {
+      final Map<String, Object?> map = value.map(
+        (Object? key, Object? nestedValue) =>
+            MapEntry(key.toString(), nestedValue),
+      );
+      final Map<String, Object?> compacted = _compactMap(map, isRoot: false);
+      return compacted.isEmpty ? null : compacted;
+    }
+    return value;
   }
 
   static EasyCopyPage restorePage(

@@ -292,12 +292,12 @@ String extractAssignedJavaScriptString(String source, String variableName) {
   final String escapedName = RegExp.escape(variableName);
   final List<RegExp> patterns = <RegExp>[
     RegExp(
-      '(?:^|[;\\s])(?:var|let|const)\\s+$escapedName\\s*=\\s*',
+      '(?:^|[^\\w\$])(?:var|let|const)\\s+$escapedName\\s*=\\s*',
       caseSensitive: false,
       multiLine: true,
     ),
     RegExp(
-      '(?:^|[;\\s])window\\.$escapedName\\s*=\\s*',
+      '(?:^|[^\\w\$.])window\\.$escapedName\\s*=\\s*',
       caseSensitive: false,
       multiLine: true,
     ),

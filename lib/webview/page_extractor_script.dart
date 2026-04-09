@@ -477,45 +477,6 @@ const String _pageExtractionScriptTemplate = r"""
       },
     );
   };
-  const materializeReaderImages = () => {
-    Array.from(document.querySelectorAll('.comicContent-list img')).forEach(
-      (img) => {
-        const nextSource =
-          attr(img, 'data-src') ||
-          attr(img, 'data-original') ||
-          attr(img, 'data') ||
-          cleanText(img.dataset ? img.dataset.src : '') ||
-          attr(img, 'src');
-        if (!nextSource) {
-          return;
-        }
-        if (!attr(img, 'src') || attr(img, 'src').includes('loading')) {
-          img.setAttribute('src', nextSource);
-        }
-      },
-    );
-
-    // The site lazily appends one page per scroll callback. Trigger enough
-    // synthetic scrolls to fully materialize medium-sized chapters.
-    for (let index = 0; index < 96; index += 1) {
-      window.dispatchEvent(new Event('scroll'));
-    }
-    window.dispatchEvent(new Event('resize'));
-  };
-  const expectedReaderImageCount = () => {
-    const rawValue =
-      queryText(document, '.comicCount') ||
-      queryText(document, '.comicContent-footer-txt span');
-    const match = rawValue.match(/(\d+)/g);
-    if (!match || match.length === 0) {
-      return 0;
-    }
-    const numbers = match.map((value) => Number.parseInt(value, 10));
-    if (numbers.some((value) => Number.isNaN(value))) {
-      return 0;
-    }
-    return numbers[numbers.length - 1];
-  };
   const detectPageType = () => {
     const path = location.pathname.toLowerCase();
     if (path.includes('/chapter/')) {
@@ -820,23 +781,14 @@ const String _pageExtractionScriptTemplate = r"""
   });
   const needsMoreTime = (type) => {
     if (type === 'reader') {
-      materializeReaderImages();
-      const expectedCount = expectedReaderImageCount();
+      const hasContentKey =
+        typeof window.contentKey === 'string' && cleanText(window.contentKey);
       const currentCount = document.querySelectorAll('.comicContent-list img').length;
-      return (
-        (
-          currentCount === 0 ||
-          (expectedCount > 0 && currentCount < expectedCount)
-        ) &&
-        state.attempts < 48
-      );
+      return !hasContentKey && currentCount === 0 && state.attempts < 6;
     }
 
     if (type === 'detail') {
-      return (
-        collectChapterLinks(document).length === 0 &&
-        state.attempts < 28
-      );
+      return collectChapterLinks(document).length === 0 && state.attempts < 8;
     }
 
     if (type === 'discover') {
@@ -844,24 +796,15 @@ const String _pageExtractionScriptTemplate = r"""
         document.querySelectorAll(discoverComicSelector).length > 0 ||
         document.querySelectorAll(topicListSelector).length > 0 ||
         document.querySelectorAll(topicDetailSelector).length > 0;
-      return (
-        !hasDiscoverItems &&
-        state.attempts < 18
-      );
+      return !hasDiscoverItems && state.attempts < 6;
     }
 
     if (type === 'rank') {
-      return (
-        document.querySelectorAll('.ranking-all-box').length === 0 &&
-        state.attempts < 14
-      );
+      return document.querySelectorAll('.ranking-all-box').length === 0 && state.attempts < 6;
     }
 
     if (type === 'home') {
-      return (
-        document.querySelectorAll('.index-all-icon').length === 0 &&
-        state.attempts < 14
-      );
+      return document.querySelectorAll('.index-all-icon').length === 0 && state.attempts < 6;
     }
 
     return false;
@@ -896,7 +839,7 @@ const String _pageExtractionScriptTemplate = r"""
     state.attempts += 1;
     const type = detectPageType();
     if (needsMoreTime(type)) {
-      state.timerId = setTimeout(tick, 250);
+      state.timerId = setTimeout(tick, 160);
       return;
     }
 

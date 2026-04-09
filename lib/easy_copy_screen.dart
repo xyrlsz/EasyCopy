@@ -66,6 +66,47 @@ const double _readerNextChapterPullTriggerDistance = 220;
 const double _readerNextChapterPagedTriggerDistance = 120;
 const double _readerNextChapterPullActivationExtent = 80;
 
+typedef ReaderPageMaybeLoader = Future<ReaderPageData?> Function(Uri uri);
+typedef ReaderPageLoader = Future<ReaderPageData> Function(Uri uri);
+
+@visibleForTesting
+Future<ReaderPageData> resolveReaderPageForDownload(
+  Uri chapterUri, {
+  required ReaderPageMaybeLoader loadFromStorageCache,
+  required ReaderPageMaybeLoader loadFromPageCache,
+  required ReaderPageLoader loadFromLightweightSource,
+  required ReaderPageLoader loadFromWebViewFallback,
+}) async {
+  bool hasUsableImageList(ReaderPageData? page) {
+    return page != null && page.imageUrls.isNotEmpty;
+  }
+
+  final ReaderPageData? storageCachedPage = await loadFromStorageCache(
+    chapterUri,
+  );
+  if (hasUsableImageList(storageCachedPage)) {
+    return storageCachedPage!;
+  }
+
+  final ReaderPageData? pageCachedPage = await loadFromPageCache(chapterUri);
+  if (hasUsableImageList(pageCachedPage)) {
+    return pageCachedPage!;
+  }
+
+  try {
+    final ReaderPageData lightweightPage = await loadFromLightweightSource(
+      chapterUri,
+    );
+    if (hasUsableImageList(lightweightPage)) {
+      return lightweightPage;
+    }
+  } catch (_) {
+    // Let WebView fallback handle parser incompatibilities.
+  }
+
+  return loadFromWebViewFallback(chapterUri);
+}
+
 Widget _buildFadeSwitchTransition(Widget child, Animation<double> animation) {
   return FadeTransition(
     opacity: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
@@ -81,7 +122,7 @@ class _EasyCopyScreenDownloadTaskRunner implements DownloadTaskRunner {
   @override
   Future<ReaderPageData> prepare(DownloadQueueTask task) async {
     await _state._session.ensureInitialized();
-    return _state._extractReaderPageForDownload(Uri.parse(task.chapterHref));
+    return _state._prepareReaderPageForDownload(Uri.parse(task.chapterHref));
   }
 
   @override

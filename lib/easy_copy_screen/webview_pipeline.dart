@@ -292,7 +292,39 @@ extension _EasyCopyScreenWebviewPipeline on _EasyCopyScreenState {
     }
   }
 
-  Future<ReaderPageData> _extractReaderPageForDownload(Uri uri) async {
+  Future<ReaderPageData> _prepareReaderPageForDownload(Uri uri) async {
+    final Uri targetUri = AppConfig.rewriteToCurrentHost(uri);
+    return resolveReaderPageForDownload(
+      targetUri,
+      loadFromStorageCache: (Uri chapterUri) {
+        return _downloadService.loadCachedReaderPage(chapterUri.toString());
+      },
+      loadFromPageCache: (Uri chapterUri) async {
+        final PageQueryKey key = _pageQueryKeyForUri(chapterUri);
+        final CachedPageHit? cachedHit = await _pageRepository.readCached(key);
+        final EasyCopyPage? page = cachedHit?.page;
+        if (page is ReaderPageData && page.imageUrls.isNotEmpty) {
+          return page;
+        }
+        return null;
+      },
+      loadFromLightweightSource: (Uri chapterUri) async {
+        final EasyCopyPage page = await SiteHtmlPageLoader.instance.loadPage(
+          chapterUri,
+          authScope: _authScopeForUri(chapterUri),
+        );
+        if (page is ReaderPageData && page.imageUrls.isNotEmpty) {
+          return page;
+        }
+        throw StateError('章节解析失败');
+      },
+      loadFromWebViewFallback: _extractReaderPageForDownloadWithWebView,
+    );
+  }
+
+  Future<ReaderPageData> _extractReaderPageForDownloadWithWebView(
+    Uri uri,
+  ) async {
     if (_downloadExtractionCompleter != null) {
       throw StateError('正在准备其他章节下载，请稍后再试。');
     }

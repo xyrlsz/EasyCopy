@@ -337,19 +337,20 @@ class SiteHtmlPageParser {
     final String contentKey = _scriptStringValue(html, 'contentKey');
     final String cct = _scriptStringValue(html, 'cct');
 
-    List<String> imageUrls = _uniqueStrings(
-      _querySelectorAll(document, '.comicContent-list img').map((
-        dom.Element img,
-      ) {
-        return _imageUrl(uri, img);
-      }),
-    );
-    if (imageUrls.isEmpty && contentKey.isNotEmpty && cct.isNotEmpty) {
-      imageUrls = _parseEncryptedReaderImageUrls(
-        uri,
-        contentKey: contentKey,
-        cct: cct,
-      );
+    List<String> imageUrls = const <String>[];
+    if (contentKey.isNotEmpty && cct.isNotEmpty) {
+      try {
+        imageUrls = _parseEncryptedReaderImageUrls(
+          uri,
+          contentKey: contentKey,
+          cct: cct,
+        );
+      } catch (_) {
+        imageUrls = const <String>[];
+      }
+    }
+    if (imageUrls.isEmpty) {
+      imageUrls = _collectReaderImageUrlsFromDom(document, uri);
     }
     if (imageUrls.isEmpty) {
       throw SiteHtmlPageParseException('阅读页图片解析失败：${uri.path}');
@@ -413,33 +414,40 @@ class SiteHtmlPageParser {
     );
     final dom.Element? authorRow = _rowByPrefix(infoRows, '作者');
 
-    List<ChapterGroupData> chapterGroups = _parseDetailChapterGroupsFromDom(
-      document,
-      uri,
-    );
-    List<ChapterData> chapters = _uniqueBy<ChapterData>(
-      chapterGroups.expand((ChapterGroupData group) => group.chapters),
-      (ChapterData chapter) => chapter.href,
-    );
-    if (chapters.isEmpty) {
-      chapters = _collectChapterLinks(document, uri);
-    }
+    List<ChapterGroupData> chapterGroups = const <ChapterGroupData>[];
+    List<ChapterData> chapters = const <ChapterData>[];
 
-    if (chapterGroups.isEmpty && loadDetailChapterResults != null) {
+    if (loadDetailChapterResults != null) {
       final DetailChapterRequest? request = _buildDetailChapterRequest(
         uri,
         html,
         document,
       );
       if (request != null) {
-        final _ParsedDetailChapters parsed = _parseEncryptedDetailChapters(
-          request,
-          await loadDetailChapterResults(request),
-        );
-        if (parsed.chapterGroups.isNotEmpty) {
-          chapterGroups = parsed.chapterGroups;
-          chapters = parsed.chapters;
+        try {
+          final _ParsedDetailChapters parsed = _parseEncryptedDetailChapters(
+            request,
+            await loadDetailChapterResults(request),
+          );
+          if (parsed.chapterGroups.isNotEmpty || parsed.chapters.isNotEmpty) {
+            chapterGroups = parsed.chapterGroups;
+            chapters = parsed.chapters;
+          }
+        } catch (_) {
+          chapterGroups = const <ChapterGroupData>[];
+          chapters = const <ChapterData>[];
         }
+      }
+    }
+
+    if (chapterGroups.isEmpty && chapters.isEmpty) {
+      chapterGroups = _parseDetailChapterGroupsFromDom(document, uri);
+      chapters = _uniqueBy<ChapterData>(
+        chapterGroups.expand((ChapterGroupData group) => group.chapters),
+        (ChapterData chapter) => chapter.href,
+      );
+      if (chapters.isEmpty) {
+        chapters = _collectChapterLinks(document, uri);
       }
     }
 
@@ -1052,6 +1060,16 @@ class SiteHtmlPageParser {
         return ChapterData(label: label, href: href);
       }).whereType<ChapterData>(),
       (ChapterData chapter) => chapter.href,
+    );
+  }
+
+  List<String> _collectReaderImageUrlsFromDom(dom.Document document, Uri uri) {
+    return _uniqueStrings(
+      _querySelectorAll(document, '.comicContent-list img').map((
+        dom.Element img,
+      ) {
+        return _imageUrl(uri, img);
+      }),
     );
   }
 
