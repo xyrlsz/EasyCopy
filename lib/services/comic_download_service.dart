@@ -17,6 +17,8 @@ import 'package:easy_copy/services/download_storage_service.dart';
 import 'package:easy_copy/services/download_queue_store.dart';
 import 'package:http/http.dart' as http;
 
+const String _comicOwnershipMarkerName = '.easycopy_comic';
+
 typedef ChapterDownloadProgressCallback =
     Future<void> Function(ChapterDownloadProgress progress);
 typedef ChapterDownloadPauseChecker = bool Function();
@@ -352,6 +354,8 @@ class ComicDownloadService {
     final _ResolvedStorageRoot root = await _resolveStorageRootFromState(
       storageState,
     );
+    final String comicDirectoryPath = _sanitizePathSegment(page.comicTitle);
+    final bool comicDirectoryExisted = await root.exists(comicDirectoryPath);
     final String resolvedComicUri =
         (comicUri ?? page.catalogHref).trim().isNotEmpty
         ? (comicUri ?? page.catalogHref).trim()
@@ -364,7 +368,7 @@ class ComicDownloadService {
         ? _chapterFolderName(page)
         : chapterLabel!.trim();
     final String chapterDirectoryPath = _joinRelativePath(<String>[
-      _sanitizePathSegment(page.comicTitle),
+      comicDirectoryPath,
       _sanitizePathSegment(resolvedChapterLabel),
     ]);
     final String manifestRelativePath = _joinRelativePath(<String>[
@@ -497,6 +501,11 @@ class ComicDownloadService {
         'imageCount': orderedSavedFiles.length,
         'files': orderedSavedFiles,
       }),
+    );
+    await _markOwnedComicDirectory(
+      root,
+      comicDirectoryPath,
+      existedBefore: comicDirectoryExisted,
     );
     await _upsertCachedChapterIndex(
       storageKey: storageKey,
@@ -1579,6 +1588,7 @@ class ComicDownloadService {
       verifyWritable: false,
     );
     final _ResolvedStorageRoot root = await _resolveStorageRootFromState(state);
+    final bool allowFullClean = !state.preferences.usePickedDirectoryAsRoot;
     final _MigrationProgressController progressController =
         _MigrationProgressController(
           fromPath: state.displayPath,
@@ -1588,6 +1598,7 @@ class ComicDownloadService {
     return _cleanupStorageRootSafely(
       root,
       progressController: progressController,
+      allowFullClean: allowFullClean,
     );
   }
 
@@ -1653,6 +1664,28 @@ class ComicDownloadService {
         .map((String segment) => segment.trim())
         .where((String segment) => segment.isNotEmpty)
         .join('/');
+  }
+
+  Future<void> _markOwnedComicDirectory(
+    _ResolvedStorageRoot root,
+    String comicDirectoryPath, {
+    required bool existedBefore,
+  }) async {
+    if (comicDirectoryPath.trim().isEmpty || existedBefore) {
+      return;
+    }
+    final String markerPath = _joinRelativePath(<String>[
+      comicDirectoryPath,
+      _comicOwnershipMarkerName,
+    ]);
+    try {
+      if (await root.exists(markerPath)) {
+        return;
+      }
+      await root.writeString(markerPath, 'easy_copy_owned');
+    } catch (_) {
+      return;
+    }
   }
 
   String _parentRelativePath(String value) {
@@ -1960,23 +1993,55 @@ class ComicDownloadService {
     );
   }
 
-  Future<void> _clearStorageRoot(_ResolvedStorageRoot root) async {
+  Future<bool> _clearStorageRoot(
+    _ResolvedStorageRoot root, {
+    required bool allowFullClean,
+  }) async {
     final List<_StorageEntry> topLevelEntries = await root.listEntries(
       '',
       recursive: false,
     );
+    bool didDelete = false;
     for (final _StorageEntry entry in topLevelEntries) {
-      await root.deletePath(entry.relativePath);
+      if (allowFullClean) {
+        if (await root.deletePath(entry.relativePath)) {
+          didDelete = true;
+        }
+        continue;
+      }
+      if (!entry.isDirectory) {
+        continue;
+      }
+      final String markerPath = _joinRelativePath(<String>[
+        entry.relativePath,
+        _comicOwnershipMarkerName,
+      ]);
+      if (!await root.exists(markerPath)) {
+        continue;
+      }
+      if (await root.deletePath(entry.relativePath)) {
+        didDelete = true;
+      }
     }
+    return didDelete;
   }
 
   Future<String> _cleanupStorageRootSafely(
     _ResolvedStorageRoot root, {
     required _MigrationProgressController progressController,
+    required bool allowFullClean,
   }) async {
     try {
       await progressController.emitCleaning();
-      await _clearStorageRoot(root);
+      final bool didDelete = await _clearStorageRoot(
+        root,
+        allowFullClean: allowFullClean,
+      );
+      if (!allowFullClean) {
+        return didDelete
+            ? '出于安全考虑仅清理了应用创建的缓存目录，请检查自选目录内是否仍有旧缓存。'
+            : '出于安全考虑未清空自选目录，请手动删除易拷贝创建的缓存目录。';
+      }
       return '';
     } catch (_) {
       return '旧缓存目录未能自动清理，可稍后手动删除。';

@@ -71,21 +71,18 @@ extension _EasyCopyScreenStandardMode on _EasyCopyScreenState {
     }
 
     final EasyCopyPage page = _page!;
-    switch (page) {
-      case HomePageData homePage:
-        children.addAll(_buildHomeSections(homePage));
-      case DiscoverPageData discoverPage:
-        children.addAll(_buildDiscoverSections(discoverPage));
-      case RankPageData rankPage:
-        children.addAll(_buildRankSections(rankPage));
-      case DetailPageData detailPage:
-        children.addAll(_buildDetailSections(detailPage));
-      case ProfilePageData profilePage:
-        children.addAll(_buildProfileSections(profilePage));
-      case UnknownPageData unknownPage:
-        children.addAll(_buildMessageSections(unknownPage.message));
-      case ReaderPageData _:
-        break;
+    if (page is HomePageData) {
+      children.addAll(_buildHomeSections(page));
+    } else if (page is DiscoverPageData) {
+      children.addAll(_buildDiscoverSections(page));
+    } else if (page is RankPageData) {
+      children.addAll(_buildRankSections(page));
+    } else if (page is DetailPageData) {
+      children.addAll(_buildDetailSections(page));
+    } else if (page is ProfilePageData) {
+      children.addAll(_buildProfileSections(page));
+    } else if (page is UnknownPageData) {
+      children.addAll(_buildMessageSections(page.message));
     }
 
     return children;

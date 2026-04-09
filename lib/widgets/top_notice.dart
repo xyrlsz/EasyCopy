@@ -52,12 +52,6 @@ class TopNotice {
     });
   }
 
-  static void hideCurrent() {
-    _dismissTimer?.cancel();
-    _dismissTimer = null;
-    _removeCurrent();
-  }
-
   static void _removeCurrent() {
     final OverlayEntry? currentEntry = _currentEntry;
     _currentEntry = null;

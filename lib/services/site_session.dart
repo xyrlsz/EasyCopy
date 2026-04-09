@@ -91,9 +91,10 @@ class SiteSession {
 
   Future<void> saveToken(String token, {Map<String, String>? cookies}) async {
     await ensureInitialized();
+    _userId = null;
+    _cookies = <String, String>{};
     _token = token;
     _cookies = <String, String>{
-      ..._cookies,
       if (cookies != null) ...cookies,
       'token': token,
     };
