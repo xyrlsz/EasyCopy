@@ -44,6 +44,7 @@ import 'package:easy_copy/widgets/cover_image.dart';
 import 'package:easy_copy/widgets/download_management_page.dart';
 import 'package:easy_copy/widgets/native_login_screen.dart';
 import 'package:easy_copy/widgets/profile_page_view.dart';
+import 'package:easy_copy/widgets/reader_image_preview.dart';
 import 'package:easy_copy/widgets/settings_ui.dart';
 import 'package:easy_copy/widgets/top_notice.dart';
 import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
@@ -207,6 +208,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       const <CachedComicLibraryEntry>[];
   Future<void>? _cachedLibraryRefreshTask;
   Future<void>? _backgroundHostRefreshTask;
+  Future<void>? _backgroundSearchApiPrewarmTask;
   CacheLibraryRefreshReason? _queuedCachedLibraryRefreshReason;
   bool _queuedCachedLibraryForceRescan = false;
   bool _isPrimaryWebViewAttached = false;
@@ -250,6 +252,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       <int, ScrollController>{};
   final Map<int, GlobalKey> _readerImageItemKeys = <int, GlobalKey>{};
   final Map<String, GlobalKey> _detailChapterItemKeys = <String, GlobalKey>{};
+  bool _suppressReaderTapUp = false;
   List<ChapterComment> _readerChapterComments = const <ChapterComment>[];
   final DeferredViewportCoordinator _standardScrollRestoreCoordinator =
       DeferredViewportCoordinator();
@@ -718,6 +721,7 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
       _refreshHostsInBackgroundAfterBootstrap(),
       _prepareDeferredDownloadBootstrapState(),
     ]);
+    unawaited(_prewarmSearchApiInBackgroundAfterBootstrap());
     await _downloadQueueManager.recoverInterruptedStorageMigration();
     if (!_downloadQueueManager.shouldBypassCachedReaderLookup) {
       await _refreshCachedComics(reason: CacheLibraryRefreshReason.bootstrap);
@@ -788,6 +792,34 @@ class _EasyCopyScreenState extends State<EasyCopyScreen>
         'error': error.toString(),
       });
     }
+  }
+
+  Future<void> _prewarmSearchApiInBackgroundAfterBootstrap() {
+    final Future<void>? activeTask = _backgroundSearchApiPrewarmTask;
+    if (activeTask != null) {
+      return activeTask;
+    }
+    final Future<void> task = _prewarmSearchApiInBackgroundAfterBootstrapImpl();
+    _backgroundSearchApiPrewarmTask = task;
+    return task.whenComplete(() {
+      if (identical(_backgroundSearchApiPrewarmTask, task)) {
+        _backgroundSearchApiPrewarmTask = null;
+      }
+    });
+  }
+
+  Future<void> _prewarmSearchApiInBackgroundAfterBootstrapImpl() async {
+    final String host = _hostManager.currentHost;
+    DebugTrace.log('search_api.bootstrap_prewarm_start', <String, Object?>{
+      'bootId': _bootId,
+      'host': host,
+    });
+    await _siteApiClient.prewarmSearchApi();
+    DebugTrace.log('search_api.bootstrap_prewarm_complete', <String, Object?>{
+      'bootId': _bootId,
+      'host': host,
+      'currentHost': _hostManager.currentHost,
+    });
   }
 
   Future<void> _refreshCachedComics({

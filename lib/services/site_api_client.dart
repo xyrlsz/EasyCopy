@@ -4,6 +4,10 @@ import 'dart:math';
 import 'package:easy_copy/config/app_config.dart';
 import 'package:easy_copy/models/chapter_comment.dart';
 import 'package:easy_copy/models/page_models.dart';
+import 'package:easy_copy/services/debug_trace.dart';
+import 'package:easy_copy/services/host_manager.dart';
+import 'package:easy_copy/services/search_api_resolver.dart';
+import 'package:easy_copy/services/search_api_store.dart';
 import 'package:easy_copy/services/site_session.dart';
 import 'package:http/http.dart' as http;
 
@@ -41,17 +45,47 @@ class _PagedProfileSection {
 }
 
 class SiteApiClient {
-  SiteApiClient({http.Client? client, SiteSession? session})
-    : _client = client ?? http.Client(),
-      _session = session ?? SiteSession.instance;
+  SiteApiClient({
+    http.Client? client,
+    SiteSession? session,
+    SearchApiResolver? searchApiResolver,
+    HostManager? hostManager,
+  }) : _client = client ?? http.Client(),
+       _session = session ?? SiteSession.instance,
+       _searchApiResolver = searchApiResolver ?? SearchApiResolver.instance,
+       _hostManager = hostManager ?? HostManager.instance;
 
   static final SiteApiClient instance = SiteApiClient();
   static const String _chapterCommentApiHost = 'api.mangacopy.com';
 
   final http.Client _client;
   final SiteSession _session;
+  final SearchApiResolver _searchApiResolver;
+  final HostManager _hostManager;
   static const int _searchPageSize = 12;
   static const int _profilePageSize = 20;
+
+  Future<void> prewarmSearchApi() async {
+    final String host = _hostManager.currentHost.trim().toLowerCase();
+    if (host.isEmpty) {
+      return;
+    }
+    try {
+      final SearchApiRecord? record = await _searchApiResolver.refreshForHost(
+        host,
+      );
+      DebugTrace.log('search_api.prewarm_complete', <String, Object?>{
+        'host': host,
+        'resolvedPath': record?.path,
+        'source': record?.source.jsonValue,
+      });
+    } catch (error) {
+      DebugTrace.log('search_api.prewarm_failed', <String, Object?>{
+        'host': host,
+        'error': error.toString(),
+      });
+    }
+  }
 
   Future<SiteLoginResult> login({
     required String username,
@@ -205,12 +239,13 @@ class SiteApiClient {
     await _session.ensureInitialized();
     final int normalizedLimit = limit.clamp(1, 120);
     final int normalizedOffset = offset < 0 ? 0 : offset;
-    final Uri uri = Uri.https(_chapterCommentApiHost, '/api/v3/roasts', <String, String>{
-      'chapter_id': normalizedChapterId,
-      'limit': '$normalizedLimit',
-      'offset': '$normalizedOffset',
-      '_update': 'true',
-    });
+    final Uri uri =
+        Uri.https(_chapterCommentApiHost, '/api/v3/roasts', <String, String>{
+          'chapter_id': normalizedChapterId,
+          'limit': '$normalizedLimit',
+          'offset': '$normalizedOffset',
+          '_update': 'true',
+        });
     final http.Response response = await _client.get(
       uri,
       headers: _buildRequestHeaders(),
@@ -230,11 +265,11 @@ class SiteApiClient {
         .where((ChapterComment comment) => comment.message.isNotEmpty)
         .toList(growable: false);
     return ChapterCommentFeed(
-      total: _pickInt(
-        results,
-        const <String>['total', 'count', 'total_count'],
-        fallback: comments.length,
-      ),
+      total: _pickInt(results, const <String>[
+        'total',
+        'count',
+        'total_count',
+      ], fallback: comments.length),
       comments: comments,
     );
   }
@@ -400,45 +435,40 @@ class SiteApiClient {
     required String qType,
   }) async {
     await _session.ensureInitialized();
-    final int offset = (page - 1) * _searchPageSize;
+    final String host = _hostManager.currentHost.trim().toLowerCase();
+    final String path = await _searchApiResolver.resolveForHost(host);
     Object? lastError;
-    for (final String path in const <String>[
-      '/api/kb/web/searchci/comics',
-      '/api/kb/web/searchch/comics',
-    ]) {
+    try {
+      final Map<String, Object?> payload = await _requestSearchPayload(
+        host: host,
+        path: path,
+        query: query,
+        page: page,
+        qType: qType,
+      );
+      await _searchApiResolver.recordVerifiedPath(host, path);
+      return payload;
+    } catch (error) {
+      lastError = error;
+    }
+
+    final SearchApiRecord? refreshed = await _searchApiResolver.refreshForHost(
+      host,
+    );
+    if (refreshed != null) {
       try {
-        final Uri uri = AppConfig.resolvePath(path).replace(
-          queryParameters: <String, String>{
-            'offset': '$offset',
-            'platform': '2',
-            'limit': '$_searchPageSize',
-            'q': query,
-            'q_type': qType,
-          },
+        final Map<String, Object?> payload = await _requestSearchPayload(
+          host: host,
+          path: refreshed.path,
+          query: query,
+          page: page,
+          qType: qType,
         );
-        final http.Response response = await _client.get(
-          uri,
-          headers: <String, String>{
-            'Accept': 'application/json',
-            'User-Agent': AppConfig.desktopUserAgent,
-            'platform': '2',
-            if (_session.cookieHeader.isNotEmpty) 'Cookie': _session.cookieHeader,
-          },
+        await _searchApiResolver.recordVerifiedPath(
+          host,
+          refreshed.path,
+          source: refreshed.source,
         );
-        final Object? decoded = jsonDecode(utf8.decode(response.bodyBytes));
-        if (decoded is! Map) {
-          throw SiteApiException('搜索接口返回格式异常。');
-        }
-        final Map<String, Object?> payload = decoded.map(
-          (Object? key, Object? value) => MapEntry(key.toString(), value),
-        );
-        final int code =
-            (payload['code'] as num?)?.toInt() ?? response.statusCode;
-        if (code != 200) {
-          throw SiteApiException(
-            (payload['message'] as String?) ?? '搜索失败：$code',
-          );
-        }
         return payload;
       } catch (error) {
         lastError = error;
@@ -449,6 +479,36 @@ class SiteApiClient {
       throw lastError;
     }
     throw SiteApiException('搜索失败，请稍后重试。');
+  }
+
+  Future<Map<String, Object?>> _requestSearchPayload({
+    required String host,
+    required String path,
+    required String query,
+    required int page,
+    required String qType,
+  }) async {
+    final int offset = (page - 1) * _searchPageSize;
+    final Uri uri = Uri.https(host, path, <String, String>{
+      'offset': '$offset',
+      'platform': '2',
+      'limit': '$_searchPageSize',
+      'q': query,
+      'q_type': qType,
+    });
+    final http.Response response = await _client.get(
+      uri,
+      headers: _buildRequestHeaders(),
+    );
+    final Map<String, Object?> payload = _decodeJsonMap(
+      response,
+      malformedMessage: '搜索接口返回格式异常。',
+    );
+    final int code = (payload['code'] as num?)?.toInt() ?? response.statusCode;
+    if (code != 200) {
+      throw SiteApiException((payload['message'] as String?) ?? '搜索失败：$code');
+    }
+    return payload;
   }
 
   Future<SiteLoginResult> _loginWithPath(
@@ -824,42 +884,46 @@ class SiteApiClient {
   }
 
   ChapterComment _parseChapterComment(Map<String, Object?> item) {
-    final Map<String, Object?> user = _firstNonEmptyMap(
-      item,
-      const <String>['user', 'member', 'author'],
-    );
+    final Map<String, Object?> user = _firstNonEmptyMap(item, const <String>[
+      'user',
+      'member',
+      'author',
+    ]);
     final int commentId = _pickInt(item, const <String>['id'], fallback: 0);
     return ChapterComment(
       id: commentId > 0
           ? '$commentId'
           : _pickString(item, const <String>['uuid', 'comment_id', 'roast_id']),
-      message: _pickString(
-        item,
-        const <String>['comment', 'roast', 'content', 'text'],
-      ),
-      avatarUrl: _pickString(
-        item,
-        const <String>['user_avatar', 'avatar', 'avatar_url'],
-      ).isNotEmpty
-          ? _pickString(
-              item,
-              const <String>['user_avatar', 'avatar', 'avatar_url'],
-            )
-          : _pickString(
-              user,
-              const <String>['avatar', 'avatar_url', 'user_avatar'],
-            ),
-      likeCount: _pickNullableInt(
-        item,
-        const <String>[
-          'like_count',
-          'likes',
-          'thumbs_count',
-          'praise_count',
-          'up_count',
-          'up',
-        ],
-      ),
+      message: _pickString(item, const <String>[
+        'comment',
+        'roast',
+        'content',
+        'text',
+      ]),
+      avatarUrl:
+          _pickString(item, const <String>[
+            'user_avatar',
+            'avatar',
+            'avatar_url',
+          ]).isNotEmpty
+          ? _pickString(item, const <String>[
+              'user_avatar',
+              'avatar',
+              'avatar_url',
+            ])
+          : _pickString(user, const <String>[
+              'avatar',
+              'avatar_url',
+              'user_avatar',
+            ]),
+      likeCount: _pickNullableInt(item, const <String>[
+        'like_count',
+        'likes',
+        'thumbs_count',
+        'praise_count',
+        'up_count',
+        'up',
+      ]),
     );
   }
 
